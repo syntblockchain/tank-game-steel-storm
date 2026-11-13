@@ -4,7 +4,7 @@ import { makeCanvas, clamp, TAU, lerp } from './util.js';
 import { WORLD_W, TILE, T } from './world.js';
 import { Helicopter } from './enemies.js';
 import { PICKUPS } from './pickups.js';
-import { getTouchLayout, drawTouchControls, drawPauseButton, drawHandButton } from './touch.js';
+import { getTouchLayout, drawTouchControls, drawPauseButton, drawHandButton, drawTwoHandButton } from './touch.js';
 import { audio } from './audio.js';
 import { FONT_EN, MONO_EN, fontSpec, tr } from './i18n.js';
 import { drawFreeHandOverlay } from './freehand.js';
@@ -288,11 +288,14 @@ function drawTouchHUD(game, ctx, p) {
   const layout = getTouchLayout(w, game.h, game.insets);
   const s = layout.s;
 
-  // Status panel (top-left) + Pause + Free Hand toggle button
+  // Status panel (top-left) + Pause + Free Hand + 2-Hand toggle buttons
   const st = layout.status;
   drawStatusPanel(game, ctx, p, st.x, st.y, st.w, st.h, clamp(st.w / 212, 0.72, 1.05));
   drawPauseButton(ctx, layout.pause);
-  drawHandButton(ctx, layout.handBtn, !!(game.freeHand && game.freeHand.enabled), game.lang);
+  const fhOn = !!(game.freeHand && game.freeHand.enabled);
+  const twoHandOn = !!(game.freeHand && game.freeHand.twoHand);
+  drawHandButton(ctx, layout.handBtn, fhOn, game.lang);
+  drawTwoHandButton(ctx, layout.twoHandBtn, twoHandOn, fhOn, game.lang);
 
   // Minimap (top-right, clear of bottom joysticks)
   const mm = layout.minimap;
@@ -345,7 +348,7 @@ function drawCrosshair(game, ctx) {
     game.input.usingTouch ||
     game.input.touch.right.active ||
     game.input.touch.mg.active ||
-    (game.freeHand && game.freeHand.enabled && game.freeHand.detected);
+    (game.freeHand && game.freeHand.enabled && (game.freeHand.right.detected || (game.freeHand.twoHand && game.freeHand.left.detected)));
   const [x, y] = worldAim ? game.worldToScreen(game.aimX, game.aimY) : [game.input.mouseX, game.input.mouseY];
   const reload = clamp(1 - p.cooldown / (p.spec.reload * p.mods.reload * (p.overdrive ? 0.45 : 1)), 0, 1);
   const ready = reload >= 1;
@@ -550,12 +553,13 @@ function wrapText(ctx, str, maxW) {
 
 export function titleLangToggleRect(game) {
   const ins = game.insets || { top: 0, left: 0 };
-  const bw = game.w < 500 ? 104 : 124;
+  const bw = game.w < 540 ? 96 : (game.w < 680 ? 104 : 124);
+  const bh = game.w < 540 ? 30 : 28;
   return {
     x: Math.max(14, ins.left + 8),
     y: Math.max(14, ins.top + 8),
     w: bw,
-    h: 30,
+    h: bh,
   };
 }
 
@@ -566,8 +570,8 @@ export function titleLangToggleHit(game, mx, my) {
 
 export function titleTouchToggleRect(game) {
   const ins = game.insets || { top: 0, right: 0 };
-  const bw = game.w < 500 ? 156 : 194;
-  const bh = 30;
+  const bw = game.w < 540 ? 138 : (game.w < 680 ? 148 : 186);
+  const bh = game.w < 540 ? 30 : 28;
   return {
     x: game.w - bw - Math.max(14, ins.right + 8),
     y: Math.max(14, ins.top + 8),
@@ -586,12 +590,27 @@ export function titleFreeHandToggleRect(game) {
   if (game.w < 540) {
     return { x: trR.x, y: trR.y + trR.h + 6, w: trR.w, h: 26 };
   }
-  const bw = game.w < 680 ? 132 : 162;
-  return { x: trR.x - bw - 8, y: trR.y, w: bw, h: trR.h };
+  const bw = game.w < 680 ? 132 : 158;
+  return { x: trR.x - bw - 6, y: trR.y, w: bw, h: trR.h };
 }
 
 export function titleFreeHandToggleHit(game, mx, my) {
   const r = titleFreeHandToggleRect(game);
+  return mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h;
+}
+
+export function titleTwoHandToggleRect(game) {
+  if (game.w < 540) {
+    const lr = titleLangToggleRect(game);
+    return { x: lr.x, y: lr.y + lr.h + 6, w: game.w < 440 ? 132 : 146, h: 26 };
+  }
+  const fhr = titleFreeHandToggleRect(game);
+  const bw = game.w < 680 ? 114 : 134;
+  return { x: fhr.x - bw - 6, y: fhr.y, w: bw, h: fhr.h };
+}
+
+export function titleTwoHandToggleHit(game, mx, my) {
+  const r = titleTwoHandToggleRect(game);
   return mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h;
 }
 
@@ -613,7 +632,7 @@ export function drawTitle(game, ctx) {
   ctx.strokeStyle = 'rgba(232,211,106,0.65)';
   ctx.lineWidth = 1;
   ctx.strokeRect(activeX, lr.y + 2, halfW - 3, lr.h - 4);
-  const pillFontSz = w < 500 ? 10 : 11;
+  const pillFontSz = w < 580 ? 9.5 : 11;
   ctx.font = `${pillFontSz}px ${MONO_EN}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -623,21 +642,32 @@ export function drawTitle(game, ctx) {
   ctx.fillStyle = _lang === 'vi' ? '#e8d36a' : 'rgba(255,255,255,0.55)';
   ctx.fillText('VIỆT', lr.x + halfW * 1.5, lr.y + lr.h / 2);
 
+  // 2-Hand Free Hand pill (row 1 alongside Free Hand on >=540px, row 2 under Lang on <540px)
+  const thr = titleTwoHandToggleRect(game);
+  const fhOn = !!(game.freeHand && game.freeHand.enabled);
+  const twoOn = !!(game.freeHand && game.freeHand.twoHand);
+  panel(ctx, thr.x, thr.y, thr.w, thr.h, twoOn ? 0.72 : 0.55);
+  if (twoOn) {
+    ctx.strokeStyle = '#64e8ff';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(thr.x, thr.y, thr.w, thr.h);
+  }
+  text(ctx, trn.twoHandPill(twoOn), thr.x + thr.w / 2, thr.y + thr.h / 2, pillFontSz, twoOn ? '#64e8ff' : '#e8d36a', 'center', MONO, false);
+
   // Free Hand pill (top-right alongside Joysticks pill, or directly below on narrow screens)
   const fhr = titleFreeHandToggleRect(game);
-  const fhOn = !!(game.freeHand && game.freeHand.enabled);
   panel(ctx, fhr.x, fhr.y, fhr.w, fhr.h, fhOn ? 0.72 : 0.55);
   if (fhOn) {
     ctx.strokeStyle = '#7dff8a';
     ctx.lineWidth = 1.5;
     ctx.strokeRect(fhr.x, fhr.y, fhr.w, fhr.h);
   }
-  text(ctx, trn.freeHandPill(fhOn), fhr.x + fhr.w / 2, fhr.y + fhr.h / 2, w < 500 ? 10 : 11, fhOn ? '#7dff8a' : '#e8d36a', 'center', MONO, false);
+  text(ctx, trn.freeHandPill(fhOn), fhr.x + fhr.w / 2, fhr.y + fhr.h / 2, pillFontSz, fhOn ? '#7dff8a' : '#e8d36a', 'center', MONO, false);
 
   // Small touch-UI mode pill in top-right corner
   const trRect = titleTouchToggleRect(game);
   panel(ctx, trRect.x, trRect.y, trRect.w, trRect.h, 0.55);
-  text(ctx, trn.joyPill(trn.touchModes[game.touchUiMode]), trRect.x + trRect.w / 2, trRect.y + trRect.h / 2, w < 500 ? 10 : 11, '#e8d36a', 'center', MONO, false);
+  text(ctx, trn.joyPill(trn.touchModes[game.touchUiMode]), trRect.x + trRect.w / 2, trRect.y + trRect.h / 2, pillFontSz, '#e8d36a', 'center', MONO, false);
 
   const t = game.titleT;
   const bob = Math.sin(t * 1.5) * 4;
@@ -709,24 +739,27 @@ export function pauseButtons(game) {
   const { w, h } = game;
   const t = tr(game.lang);
   const fhOn = !!(game.freeHand && game.freeHand.enabled);
+  const twoHandOn = !!(game.freeHand && game.freeHand.twoHand);
   const items = [
     { id: 'resume', label: t.resume },
     { id: 'music', label: audio.musicOn ? t.musicOn : t.musicOff },
     { id: 'freehand', label: t.freeHandPauseBtn(fhOn) },
+    { id: 'twohand', label: t.twoHandPauseBtn(twoHandOn) },
   ];
-  if (fhOn) items.push({ id: 'handmode', label: t.freeHandModeBtn(game.freeHand.mode === 'smart') });
+  if (fhOn && twoHandOn) items.push({ id: 'leftweapon', label: t.leftWeaponBtn(game.freeHand.leftWeapon) });
+  else if (fhOn) items.push({ id: 'handmode', label: t.freeHandModeBtn(game.freeHand.mode === 'smart') });
   items.push({ id: 'touch', label: t.joysticksBtn(t.touchModes[game.touchUiMode]) });
   if (!(game.input.isTouchDevice || game.input.usingTouch)) items.push({ id: 'controls', label: t.controlsBtn(t.controlModes[game.controlMode]) });
   items.push({ id: 'lang', label: t.langBtn });
   items.push({ id: 'quit', label: t.quitTitle });
 
-  const bw = clamp(w * 0.68, 224, 310);
-  const gap = h < 480 ? 6 : 8;
-  const maxAvail = Math.max(180, h - 88);
-  const bh = clamp(Math.min(h * 0.068, Math.floor((maxAvail - (items.length - 1) * gap) / items.length)), 24, 44);
+  const bw = clamp(w * 0.68, 224, 320);
+  const gap = h < 480 ? 5 : 8;
+  const maxAvail = Math.max(180, h - 72);
+  const bh = clamp(Math.min(h * 0.068, Math.floor((maxAvail - (items.length - 1) * gap) / items.length)), 22, 44);
   const totalH = items.length * bh + (items.length - 1) * gap;
   const x = w / 2 - bw / 2;
-  const y0 = clamp(h / 2 - totalH / 2 + 28, Math.max(76, h * 0.22), h - totalH - 12);
+  const y0 = clamp(h / 2 - totalH / 2 + 24, Math.max(60, h * 0.2), h - totalH - 10);
   return items.map((it, i) => ({
     ...it,
     x,
@@ -749,8 +782,8 @@ export function drawPause(game, ctx) {
   ctx.fillStyle = 'rgba(0,0,0,0.6)';
   ctx.fillRect(0, 0, w, h);
   const btns = pauseButtons(game);
-  const titleY = Math.max(30, btns[0].y - 38);
-  const titleSize = fitTitleSize(ctx, t.paused, clamp(Math.min(w / 8, h / 8), 32, 76), w * 0.88);
+  const titleY = Math.max(26, btns[0].y - 34);
+  const titleSize = fitTitleSize(ctx, t.paused, clamp(Math.min(w / 8, h / 8), 28, 76), w * 0.88);
   titleText(ctx, t.paused, w / 2, titleY, titleSize);
 
   for (const b of btns) {
@@ -765,8 +798,9 @@ export function drawPause(game, ctx) {
       b.id === 'quit' ? '#ffb347'
         : b.id === 'resume' ? '#e8d36a'
           : b.id === 'freehand' && game.freeHand && game.freeHand.enabled ? '#7dff8a'
-            : '#ffffff';
-    text(ctx, b.label, b.x + b.w / 2, b.y + b.h / 2, clamp(b.h * 0.36, 11, 16), color, 'center', FONT, false);
+            : (b.id === 'twohand' && game.freeHand && game.freeHand.twoHand) || b.id === 'leftweapon' ? '#64e8ff'
+              : '#ffffff';
+    text(ctx, b.label, b.x + b.w / 2, b.y + b.h / 2, clamp(b.h * 0.36, 10.5, 16), color, 'center', FONT, false);
   }
 }
 

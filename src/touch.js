@@ -48,9 +48,18 @@ export function getTouchLayout(w, h, insets = null) {
     ? { x: status.x + status.w + 8, y: padT, w: 36, h: 34 }
     : { x: status.x + status.w + 10, y: padT, w: 38, h: 38 };
 
+  const handW = narrow ? 54 : (w < 960 ? 74 : 88);
   const handBtn = narrow
-    ? { x: pause.x, y: padT + 40, w: 66, h: 28 }
-    : { x: pause.x + pause.w + 8, y: padT, w: w < 960 ? 76 : 90, h: 38 };
+    ? { x: pause.x, y: padT + 40, w: handW, h: 28 }
+    : { x: pause.x + pause.w + 8, y: padT, w: handW, h: 38 };
+
+  const twoHandW = narrow ? 42 : (w < 960 ? 52 : 60);
+  const twoHandBtn = {
+    x: handBtn.x + handBtn.w + (narrow ? 4 : 6),
+    y: handBtn.y,
+    w: twoHandW,
+    h: handBtn.h,
+  };
 
   return {
     w,
@@ -75,6 +84,7 @@ export function getTouchLayout(w, h, insets = null) {
     minimap,
     pause,
     handBtn,
+    twoHandBtn,
   };
 }
 
@@ -103,9 +113,11 @@ export class TouchControls {
     this.msl = { id: null, active: false };
     this.pauseId = null;
     this.handId = null;
+    this.twoHandId = null;
     this.mslPressed = false;
     this.pausePressed = false;
     this.handPressed = false;
+    this.twoHandPressed = false;
     this.taps = [];
     this.deadzone = 0.14;
     this.fireThreshold = 0.30;
@@ -119,9 +131,11 @@ export class TouchControls {
     this.msl = { id: null, active: false };
     this.pauseId = null;
     this.handId = null;
+    this.twoHandId = null;
     this.mslPressed = false;
     this.pausePressed = false;
     this.handPressed = false;
+    this.twoHandPressed = false;
   }
 
   resetAll() {
@@ -133,6 +147,7 @@ export class TouchControls {
     this.mslPressed = false;
     this.pausePressed = false;
     this.handPressed = false;
+    this.twoHandPressed = false;
     this.taps.length = 0;
   }
 
@@ -144,6 +159,11 @@ export class TouchControls {
   _inHandBtn(x, y, layout) {
     const b = layout.handBtn;
     return !!b && x >= b.x - 6 && x <= b.x + b.w + 6 && y >= b.y - 6 && y <= b.y + b.h + 6;
+  }
+
+  _inTwoHandBtn(x, y, layout) {
+    const b = layout.twoHandBtn;
+    return !!b && x >= b.x - 4 && x <= b.x + b.w + 4 && y >= b.y - 6 && y <= b.y + b.h + 6;
   }
 
   _inHudBox(x, y, layout) {
@@ -184,6 +204,12 @@ export class TouchControls {
     if (this._inHandBtn(x, y, layout)) {
       this.handId = id;
       this.handPressed = true;
+      return true;
+    }
+
+    if (this._inTwoHandBtn(x, y, layout)) {
+      this.twoHandId = id;
+      this.twoHandPressed = true;
       return true;
     }
 
@@ -279,7 +305,7 @@ export class TouchControls {
       }
       return true;
     }
-    return id === this.bst.id || id === this.msl.id || id === this.pauseId || id === this.handId;
+    return id === this.bst.id || id === this.msl.id || id === this.pauseId || id === this.handId || id === this.twoHandId;
   }
 
   onEnd(id) {
@@ -309,6 +335,10 @@ export class TouchControls {
     }
     if (id === this.handId) {
       this.handId = null;
+      return true;
+    }
+    if (id === this.twoHandId) {
+      this.twoHandId = null;
       return true;
     }
     return false;
@@ -660,6 +690,34 @@ export function drawHandButton(ctx, rect, active, lang = 'en') {
   ctx.restore();
 }
 
+export function drawTwoHandButton(ctx, rect, twoHand, handEnabled, lang = 'en') {
+  const { x, y, w, h } = rect;
+  const t = tr(lang);
+  const active = twoHand && handEnabled;
+  const armed = twoHand && !handEnabled;
+  ctx.save();
+  ctx.fillStyle = active ? 'rgba(18,48,60,0.88)' : armed ? 'rgba(24,38,44,0.78)' : 'rgba(10,14,12,0.58)';
+  ctx.beginPath();
+  ctx.moveTo(x + 6, y);
+  ctx.lineTo(x + w, y);
+  ctx.lineTo(x + w, y + h - 6);
+  ctx.lineTo(x + w - 6, y + h);
+  ctx.lineTo(x, y + h);
+  ctx.lineTo(x, y + 6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = active ? '#64e8ff' : armed ? 'rgba(100,232,255,0.65)' : 'rgba(232,211,106,0.38)';
+  ctx.lineWidth = active ? 1.8 : 1.2;
+  ctx.stroke();
+
+  ctx.font = fontSpec(lang, Math.round(clamp(h * 0.33, 9, 12)), 'mono');
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = active || armed ? '#64e8ff' : '#e8d36a';
+  ctx.fillText(t.twoHandBtn, x + w / 2, y + h / 2 + 0.5);
+  ctx.restore();
+}
+
 export function drawTouchControls(game, ctx) {
   const p = game.player;
   if (!p || !p.alive || game.state !== 'playing') return;
@@ -668,29 +726,53 @@ export function drawTouchControls(game, ctx) {
   const tc = game.input.touch;
   const fh = game.freeHand;
 
-  // Mirror active Free Hand gesture onto the Right Joystick visual when user isn't directly dragging it
+  // Mirror active Free Hand left gesture onto Left Joystick when user isn't directly dragging it
+  let leftStick = tc.left;
+  if (!tc.left.active && fh && fh.enabled && fh.twoHand && fh.left.detected) {
+    const lg = fh.left.gesture;
+    const dist = (lg.dx || lg.dy) ? layout.jr * 0.85 : 0;
+    const ang = lg.angle ?? 0;
+    leftStick = {
+      active: lg.action !== 'idle' && lg.action !== 'none',
+      originX: layout.leftHome.x,
+      originY: layout.leftHome.y,
+      curX: layout.leftHome.x + lg.dx * dist,
+      curY: layout.leftHome.y + lg.dy * dist,
+      x: lg.dx,
+      y: lg.dy,
+      mag: (lg.dx || lg.dy) ? 1 : 0,
+      angle: ang,
+      firing: false,
+    };
+  }
+
+  // Mirror active Free Hand right gesture onto Right Joystick when user isn't directly dragging it
   let rightStick = tc.right;
-  if (!tc.right.active && fh && fh.enabled && fh.detected) {
-    const g = fh.gesture;
-    const dist = (g.dx || g.dy) ? layout.jr * 0.85 : 0;
-    const ang = g.angle ?? game.touchAim ?? p.turretAngle;
+  if (!tc.right.active && fh && fh.enabled && fh.right.detected) {
+    const rg = fh.right.gesture;
+    const dist = (rg.dx || rg.dy) ? layout.jr * 0.85 : 0;
+    const ang = rg.angle ?? game.touchAim ?? p.turretAngle;
     rightStick = {
-      active: g.action !== 'idle' && g.action !== 'none',
+      active: rg.action !== 'idle' && rg.action !== 'none',
       originX: layout.rightHome.x,
       originY: layout.rightHome.y,
-      curX: layout.rightHome.x + g.dx * dist,
-      curY: layout.rightHome.y + g.dy * dist,
-      x: g.dx,
-      y: g.dy,
-      mag: (g.dx || g.dy) ? 1 : 0,
+      curX: layout.rightHome.x + rg.dx * dist,
+      curY: layout.rightHome.y + rg.dy * dist,
+      x: rg.dx,
+      y: rg.dy,
+      mag: (rg.dx || rg.dy) ? 1 : 0,
       angle: ang,
-      firing: g.fire,
+      firing: rg.fire,
     };
   }
 
   // Dual joysticks
-  drawJoystick(ctx, tc.left, layout.leftHome, layout.jr, layout.knobR, false, game.time, game.lang);
+  drawJoystick(ctx, leftStick, layout.leftHome, layout.jr, layout.knobR, false, game.time, game.lang);
   drawJoystick(ctx, rightStick, layout.rightHome, layout.jr, layout.knobR, true, game.time, game.lang);
+
+  const leftOpen = !!(fh && fh.enabled && fh.twoHand && fh.left.detected && fh.left.gesture.fire);
+  const mgByHand = leftOpen && (fh.leftWeapon === 'auto' || fh.leftWeapon === 'mg');
+  const mslByHand = leftOpen && (fh.leftWeapon === 'auto' || fh.leftWeapon === 'msl');
 
   // Secondary action buttons
   drawActionButton(ctx, layout.buttons.bst, {
@@ -705,7 +787,7 @@ export function drawTouchControls(game, ctx) {
 
   const heatBlink = p.overheated && Math.sin(game.time * 20) > 0;
   drawActionButton(ctx, layout.buttons.mg, {
-    active: tc.mg.active,
+    active: tc.mg.active || mgByHand,
     disabled: p.overheated,
     accent: p.overheated ? '#ff4a3a' : '#ffb347',
     progress: p.mgHeat,
@@ -727,7 +809,7 @@ export function drawTouchControls(game, ctx) {
   }
 
   drawActionButton(ctx, layout.buttons.msl, {
-    active: tc.msl.active,
+    active: tc.msl.active || mslByHand,
     disabled: game.missiles <= 0,
     accent: '#e67e22',
     label: 'MSL',

@@ -47,6 +47,7 @@ export class Game {
     this.controlMode = 'arcade';
     this.touchUiMode = 'on';
     this.freeHand = new FreeHandController();
+    this._prevLeftMslOpen = false;
     this.insets = { top: 0, right: 0, bottom: 0, left: 0 };
     try {
       this.best = parseInt(localStorage.getItem('steelstorm.best') || '0', 10) || 0;
@@ -55,6 +56,10 @@ export class Game {
       if (savedTouch === 'on' || savedTouch === 'off') this.touchUiMode = savedTouch;
       const savedHandMode = localStorage.getItem('steelstorm.handMode');
       if (savedHandMode === 'smart' || savedHandMode === 'aim') this.freeHand.mode = savedHandMode;
+      const savedTwoHand = localStorage.getItem('steelstorm.twoHand');
+      if (savedTwoHand === 'on') this.freeHand.twoHand = true;
+      const savedLeftWep = localStorage.getItem('steelstorm.leftWeapon');
+      if (savedLeftWep === 'auto' || savedLeftWep === 'msl' || savedLeftWep === 'mg') this.freeHand.leftWeapon = savedLeftWep;
     } catch {
       this.best = 0;
     }
@@ -66,6 +71,9 @@ export class Game {
       showTouch: this.showTouchControls,
       allowMouseTouch: this.showTouchControls,
       freeHand: this.freeHand,
+      toggleFreeHandMode: () => this.toggleFreeHandMode(),
+      toggleTwoHand: () => this.toggleTwoHand(),
+      cycleLeftWeapon: () => this.cycleLeftWeapon(),
     });
     this.input.onGesture = () => audio.init();
     this.resize();
@@ -241,12 +249,17 @@ export class Game {
     if (inp.hit('KeyJ')) this.toggleTouchUi();
     if (inp.hit('KeyL')) this.toggleLang();
     if (inp.hit('KeyH')) this.toggleFreeHand();
+    if (inp.hit('KeyT')) this.toggleTwoHand();
     const tap = inp.touchTap || (inp.mouseClicked[0] ? { x: inp.mouseX, y: inp.mouseY } : null);
 
     if (this.state === 'title') {
       if (inp.hit('KeyC')) this.toggleControls();
       if (tap && HUD.titleLangToggleHit(this, tap.x, tap.y)) {
         this.toggleLang();
+        return;
+      }
+      if (tap && HUD.titleTwoHandToggleHit(this, tap.x, tap.y)) {
+        this.toggleTwoHand();
         return;
       }
       if (tap && HUD.titleFreeHandToggleHit(this, tap.x, tap.y)) {
@@ -261,6 +274,7 @@ export class Game {
       if (inp.hit('Enter', 'Space') || tap || inp.padHit(0) || inp.padHit(9)) this.startGame();
     } else if (this.state === 'playing') {
       if (inp.touch.handPressed) this.toggleFreeHand();
+      if (inp.touch.twoHandPressed) this.toggleTwoHand();
       if (inp.hit('Escape', 'KeyP') || inp.padHit(9) || inp.touch.pausePressed) {
         this.state = 'paused';
         audio.updateEngine(0, 0, false, false);
@@ -286,8 +300,12 @@ export class Game {
           audio.play('ui', undefined, undefined, { freq: 520 });
         } else if (hit === 'freehand') {
           this.toggleFreeHand();
+        } else if (hit === 'twohand') {
+          this.toggleTwoHand();
         } else if (hit === 'handmode') {
           this.toggleFreeHandMode();
+        } else if (hit === 'leftweapon') {
+          this.cycleLeftWeapon();
         } else if (hit === 'touch') {
           this.toggleTouchUi();
           audio.play('ui', undefined, undefined, { freq: 600 });
@@ -317,6 +335,23 @@ export class Game {
     if (this.freeHand.enabled) this.freeHand.disable();
     else this.freeHand.enable();
     audio.play('ui', undefined, undefined, { freq: this.freeHand.enabled ? 760 : 420 });
+  }
+
+  toggleTwoHand() {
+    this.freeHand.toggleTwoHand();
+    if (this.freeHand.twoHand && !this.freeHand.enabled) this.freeHand.enable();
+    try {
+      localStorage.setItem('steelstorm.twoHand', this.freeHand.twoHand ? 'on' : 'off');
+    } catch {}
+    audio.play('ui', undefined, undefined, { freq: this.freeHand.twoHand ? 820 : 520 });
+  }
+
+  cycleLeftWeapon() {
+    this.freeHand.cycleLeftWeapon();
+    try {
+      localStorage.setItem('steelstorm.leftWeapon', this.freeHand.leftWeapon);
+    } catch {}
+    audio.play('ui', undefined, undefined, { freq: 700 });
   }
 
   toggleFreeHandMode() {
@@ -440,37 +475,51 @@ export class Game {
     const pad = inp.pad && (Math.abs(lx) > 0 || Math.abs(ly) > 0);
     const tLeft = inp.touch.left;
     const touchDrive = this.showTouchControls && tLeft.active && tLeft.mag > 0;
-    const leftDriving = touchDrive || pad || mx !== 0 || my !== 0;
+    const keyDrive = mx !== 0 || my !== 0;
 
     const fh = this.freeHand;
-    const handActive = !!(fh && fh.enabled && fh.detected);
-    const hg = handActive ? fh.gesture : null;
-    const handDrive = handActive && fh.mode === 'smart' && !leftDriving && hg && (hg.dx !== 0 || hg.dy !== 0) && !hg.fire;
+    const rightHandActive = !!(fh && fh.enabled && fh.right.detected);
+    const rg = rightHandActive ? fh.right.gesture : null;
+    const leftHandActive = !!(fh && fh.enabled && fh.twoHand && fh.left.detected);
+    const lg = leftHandActive ? fh.left.gesture : null;
+
+    const leftHandDrive = leftHandActive && lg && !lg.fire && (lg.dx !== 0 || lg.dy !== 0);
+    const rightHandSmartDrive = !leftHandActive && rightHandActive && fh.mode === 'smart' && rg && !rg.fire && (rg.dx !== 0 || rg.dy !== 0);
 
     if (touchDrive) {
       driveToward(p, tLeft.x, tLeft.y, tLeft.mag, true);
     } else if (pad) {
       driveToward(p, lx, ly, Math.min(1, Math.hypot(lx, ly)), true);
-    } else if (handDrive) {
-      driveToward(p, hg.dx, hg.dy, 1, true);
-    } else if (this.controlMode === 'tank') {
-      p.throttle = -my;
-      p.turn = mx;
-    } else {
-      const m = Math.hypot(mx, my);
-      if (m > 0) driveToward(p, mx / m, my / m, 1, true);
-      else {
-        p.throttle = 0;
-        p.turn = 0;
+    } else if (keyDrive) {
+      if (this.controlMode === 'tank') {
+        p.throttle = -my;
+        p.turn = mx;
+      } else {
+        const m = Math.hypot(mx, my);
+        driveToward(p, mx / m, my / m, 1, true);
       }
+    } else if (leftHandDrive) {
+      driveToward(p, lg.dx, lg.dy, 1, true);
+    } else if (leftHandActive) {
+      // Left hand is present in center circle ("do nothing") or open firing: stay stationary.
+      p.throttle = 0;
+      p.turn = 0;
+    } else if (rightHandSmartDrive) {
+      driveToward(p, rg.dx, rg.dy, 1, true);
+    } else {
+      p.throttle = 0;
+      p.turn = 0;
     }
 
-    // Aim (Right joystick / Free Hand / Gamepad / Mouse)
+    // Aim (Right joystick / Free Hand Right / Gamepad / Mouse)
     const [rx, ry] = inp.stick(2, 3, 0.25);
     const tRight = inp.touch.right;
     const tMg = inp.touch.mg;
     const directTouchAim = this.showTouchControls && (tRight.active || (tMg.active && tMg.aiming));
-    const usingTouchButtonOnly = this.showTouchControls && !directTouchAim && (tMg.active || inp.touch.bst.active || inp.touch.msl.active);
+    const padHolding = !!(fh && fh.enabled && fh.hasAnyPadPointer && fh.hasAnyPadPointer());
+    const usingTouchButtonOnly =
+      padHolding ||
+      (this.showTouchControls && !directTouchAim && (tMg.active || inp.touch.bst.active || inp.touch.msl.active));
     const aimDist = clamp((Math.min(this.w, this.h) / this.cam.zoom) * 0.36, 180, 320);
 
     if (inp.usingGamepad) {
@@ -481,12 +530,12 @@ export class Game {
     } else if (directTouchAim || inp.usingTouch) {
       if (tRight.active && tRight.mag > 0) this.touchAim = tRight.angle;
       else if (tMg.active && tMg.aiming) this.touchAim = tMg.aimAngle;
-      else if (handActive && hg.angle !== null) this.touchAim = hg.angle;
+      else if (rightHandActive && rg.angle !== null) this.touchAim = rg.angle;
       p.aim = this.touchAim ?? p.turretAngle;
       this.aimX = p.x + Math.cos(p.aim) * aimDist;
       this.aimY = p.y + Math.sin(p.aim) * aimDist;
-    } else if (handActive) {
-      if (hg.angle !== null) this.touchAim = hg.angle;
+    } else if (rightHandActive) {
+      if (rg.angle !== null) this.touchAim = rg.angle;
       p.aim = this.touchAim ?? p.turretAngle;
       this.aimX = p.x + Math.cos(p.aim) * aimDist;
       this.aimY = p.y + Math.sin(p.aim) * aimDist;
@@ -503,12 +552,24 @@ export class Game {
     }
 
     p.wantBoost = inp.down('ShiftLeft', 'ShiftRight') || inp.padButton(0) || inp.padButton(4) || (this.showTouchControls && inp.touch.bst.active);
-    const fire = inp.mouseDown[0] || inp.padValue(7) > 0.3 || (this.showTouchControls && tRight.firing) || (handActive && hg.fire);
-    const mg = inp.mouseDown[2] || inp.padValue(6) > 0.3 || inp.padButton(5) || inp.down('KeyF') || (this.showTouchControls && tMg.active);
+    const fire = inp.mouseDown[0] || inp.padValue(7) > 0.3 || (this.showTouchControls && tRight.firing) || (rightHandActive && rg.fire);
+
+    // 2-hand Free Hand: Left Open hand fires alternative ammo (missiles / coax MG)
+    const leftOpen = !!(leftHandActive && lg && lg.fire);
+    const mgByHand = leftOpen && (fh.leftWeapon === 'auto' || fh.leftWeapon === 'mg');
+    const mslByHand = leftOpen && (fh.leftWeapon === 'auto' || fh.leftWeapon === 'msl');
+
+    const mg = inp.mouseDown[2] || inp.padValue(6) > 0.3 || inp.padButton(5) || inp.down('KeyF') || (this.showTouchControls && tMg.active) || mgByHand;
     if (fire && p.fireCannon()) this.stats.shots++;
     if (mg) p.fireMg();
+
     this.missileCooldown -= dt;
-    if ((inp.hit('Space', 'KeyE') || inp.padHit(1) || inp.padHit(2) || (this.showTouchControls && inp.touch.mslPressed)) && this.missileCooldown <= 0) this.fireMissiles();
+    const mslTrigger = inp.hit('Space', 'KeyE') || inp.padHit(1) || inp.padHit(2) || (this.showTouchControls && inp.touch.mslPressed);
+    if (this.missileCooldown <= 0) {
+      if (mslTrigger || (mslByHand && this.missiles > 0)) this.fireMissiles();
+      else if (mslByHand && !this._prevLeftMslOpen && fh.leftWeapon === 'msl') this.fireMissiles();
+    }
+    this._prevLeftMslOpen = mslByHand;
   }
 
   fireMissiles() {
