@@ -25,15 +25,15 @@ npm run build      # dist/steel-storm.html: one self-contained file, double-clic
 
 ## Controls
 
-| Action | Keyboard / mouse | Gamepad |
-| --- | --- | --- |
-| Drive | WASD (arcade: tank turns toward the direction pressed; `C` switches to classic tank steering) | Left stick |
-| Aim | Mouse | Right stick |
-| Cannon | Left click | RT |
-| Coax machine gun | Right click / `F` (overheats) | LT / RB |
-| Boost | Shift | A / LB |
-| Homing missiles | Space / `E` | B / X |
-| Pause · music | Esc · `M` | Start |
+| Action | Keyboard / mouse | Gamepad | Mobile / Touch |
+| --- | --- | --- | --- |
+| Drive | WASD (arcade: tank turns toward the direction pressed; `C` switches to classic tank steering) | Left stick | Left joystick |
+| Aim | Mouse | Right stick | Right joystick (or drag `MG`) |
+| Cannon | Left click | RT | Right joystick (outer ring) |
+| Coax machine gun | Right click / `F` (overheats) | LT / RB | `MG` button (hold & drag to aim) |
+| Boost | Shift | A / LB | `BST` button |
+| Homing missiles | Space / `E` | B / X | `MSL` button |
+| Pause · music | Esc · `M` (`J` toggles joysticks) | Start | Top HUD pause button |
 
 ## What's in it
 
@@ -59,5 +59,6 @@ npm run build      # dist/steel-storm.html: one self-contained file, double-clic
 | `src/audio.js` | Synthesised SFX, engine/rotor loops, sequenced music |
 | `src/game.js` | Loop, combat, waves, scoring, upgrades, camera, render order |
 | `src/hud.js` | HUD, minimap, menus |
+| `src/touch.js` | Dual virtual joysticks, mobile action buttons and responsive touch HUD layout |
 
 `tools/` holds headless-Chrome test scripts (`cd tools && npm i && node bot.mjs`) and `sim-tank.mjs`, which checks the vehicle handling numbers in Node.

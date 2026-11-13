@@ -41,12 +41,25 @@ export class Game {
     this.sprites = buildSprites();
     this.state = 'title';
     this.controlMode = 'arcade';
+    this.touchUiMode = 'auto';
+    this.insets = { top: 0, right: 0, bottom: 0, left: 0 };
     try {
       this.best = parseInt(localStorage.getItem('steelstorm.best') || '0', 10) || 0;
       this.controlMode = localStorage.getItem('steelstorm.controls') || 'arcade';
+      const savedTouch = localStorage.getItem('steelstorm.touch');
+      if (savedTouch === 'auto' || savedTouch === 'on' || savedTouch === 'off') this.touchUiMode = savedTouch;
     } catch {
       this.best = 0;
     }
+    this.input.getContext = () => ({
+      state: this.state,
+      w: this.w,
+      h: this.h,
+      insets: this.insets,
+      showTouch: this.showTouchControls,
+      allowMouseTouch: this.touchUiMode === 'on',
+    });
+    this.input.onGesture = () => audio.init();
     this.resize();
     window.addEventListener('resize', () => this.resize());
     this.camNoise = makeNoise(42);
@@ -54,6 +67,12 @@ export class Game {
     this.titleT = 0;
     this.acc = 0;
     this.last = performance.now();
+  }
+
+  get showTouchControls() {
+    if (this.touchUiMode === 'on') return true;
+    if (this.touchUiMode === 'off') return false;
+    return this.input.usingTouch && !this.input.usingGamepad;
   }
 
   resize() {
@@ -65,6 +84,15 @@ export class Game {
     this.canvas.height = Math.floor(this.h * dpr);
     this.canvas.style.width = this.w + 'px';
     this.canvas.style.height = this.h + 'px';
+    if (typeof getComputedStyle === 'function' && document.documentElement) {
+      const cs = getComputedStyle(document.documentElement);
+      this.insets = {
+        top: parseFloat(cs.getPropertyValue('--sat')) || 0,
+        right: parseFloat(cs.getPropertyValue('--sar')) || 0,
+        bottom: parseFloat(cs.getPropertyValue('--sab')) || 0,
+        left: parseFloat(cs.getPropertyValue('--sal')) || 0,
+      };
+    }
     // Base zoom shows a consistent amount of world across screen sizes.
     this.baseZoom = clamp(Math.min(this.w / 1350, this.h / 820), 0.45, 1.4);
     this.vignette = HUD.makeVignette(this.w, this.h);
@@ -140,6 +168,10 @@ export class Game {
     this.flowTimer = 0;
     this.cam.x = s.x;
     this.cam.y = s.y;
+    this.touchAim = this.player.turretAngle;
+    this.aimX = s.x + Math.cos(this.touchAim) * 280;
+    this.aimY = s.y + Math.sin(this.touchAim) * 280;
+    this.input.touch.resetAll();
     audio.startMusic();
     audio.play('stinger', undefined, undefined, { chord: [45, 52, 57, 60] });
     this.say('DEPLOYED', 'Survive the storm. Destroy everything.', '#e8d36a');
@@ -187,33 +219,80 @@ export class Game {
     this.handleStateInput();
     // The key or click that changed state is used up, so starting a game or picking
     // an upgrade with Space doesn't also fire a missile salvo in the same frame.
-    if (this.state !== before) this.input.endFrame();
+    if (this.state !== before) {
+      this.input.endFrame();
+      this.input.touch.resetAll();
+    }
   }
 
   handleStateInput() {
     const inp = this.input;
     if (inp.hit('KeyM')) audio.toggleMusic();
+    if (inp.hit('KeyJ')) this.toggleTouchUi();
+    const tap = inp.touchTap || (inp.mouseClicked[0] ? { x: inp.mouseX, y: inp.mouseY } : null);
+
     if (this.state === 'title') {
       if (inp.hit('KeyC')) this.toggleControls();
-      if (inp.hit('Enter', 'Space') || inp.mouseClicked[0] || inp.padHit(0) || inp.padHit(9)) this.startGame();
+      if (tap && HUD.titleTouchToggleHit(this, tap.x, tap.y)) {
+        this.toggleTouchUi();
+        audio.play('ui', undefined, undefined, { freq: 660 });
+        return;
+      }
+      if (inp.hit('Enter', 'Space') || tap || inp.padHit(0) || inp.padHit(9)) this.startGame();
     } else if (this.state === 'playing') {
-      if (inp.hit('Escape', 'KeyP') || inp.padHit(9)) {
+      if (inp.hit('Escape', 'KeyP') || inp.padHit(9) || inp.touch.pausePressed) {
         this.state = 'paused';
+        audio.updateEngine(0, 0, false, false);
+        audio.updateRotor(0);
         audio.play('ui', undefined, undefined, { freq: 440 });
       }
     } else if (this.state === 'paused') {
       if (inp.hit('KeyC')) this.toggleControls();
-      if (inp.hit('Escape', 'KeyP', 'Enter') || inp.padHit(9) || inp.mouseClicked[0]) {
+      if (inp.hit('KeyQ')) return this.toTitle();
+      if (inp.hit('Escape', 'KeyP', 'Enter') || inp.padHit(9)) {
         this.state = 'playing';
         this.last = performance.now();
+        return;
       }
-      if (inp.hit('KeyQ')) this.toTitle();
+      if (tap) {
+        const hit = HUD.pauseButtonHit(this, tap.x, tap.y);
+        if (hit === 'resume') {
+          this.state = 'playing';
+          this.last = performance.now();
+        } else if (hit === 'music') {
+          audio.init();
+          audio.toggleMusic();
+          audio.play('ui', undefined, undefined, { freq: 520 });
+        } else if (hit === 'touch') {
+          this.toggleTouchUi();
+          audio.play('ui', undefined, undefined, { freq: 600 });
+        } else if (hit === 'controls') {
+          this.toggleControls();
+        } else if (hit === 'quit') {
+          this.toTitle();
+        } else if (inp.mouseClicked[0]) {
+          this.state = 'playing';
+          this.last = performance.now();
+        }
+      }
     } else if (this.state === 'upgrade') {
       this.handleUpgradeInput();
     } else if (this.state === 'gameover') {
-      if (this.deathTimer > 2.5 && (inp.hit('Enter', 'KeyR', 'Space') || inp.mouseClicked[0] || inp.padHit(0) || inp.padHit(9))) this.startGame();
+      if (this.deathTimer > 2.5) {
+        if (tap && HUD.gameOverTitleHit(this, tap.x, tap.y)) return this.toTitle();
+        if (inp.hit('Enter', 'KeyR', 'Space') || tap || inp.padHit(0) || inp.padHit(9)) this.startGame();
+      }
       if (inp.hit('Escape')) this.toTitle();
     }
+  }
+
+  toggleTouchUi() {
+    const order = ['auto', 'on', 'off'];
+    this.touchUiMode = order[(order.indexOf(this.touchUiMode) + 1) % order.length];
+    try {
+      localStorage.setItem('steelstorm.touch', this.touchUiMode);
+    } catch {}
+    this.input.touch.resetAll();
   }
 
   toggleControls() {
@@ -309,8 +388,12 @@ export class Game {
     if (inp.down('KeyD', 'ArrowRight')) mx += 1;
     const [lx, ly] = inp.stick(0, 1);
     const pad = inp.pad && (Math.abs(lx) > 0 || Math.abs(ly) > 0);
+    const tLeft = inp.touch.left;
+    const touchDrive = this.showTouchControls && tLeft.active && tLeft.mag > 0;
 
-    if (pad) {
+    if (touchDrive) {
+      driveToward(p, tLeft.x, tLeft.y, tLeft.mag, true);
+    } else if (pad) {
       driveToward(p, lx, ly, Math.min(1, Math.hypot(lx, ly)), true);
     } else if (this.controlMode === 'tank') {
       p.throttle = -my;
@@ -326,11 +409,23 @@ export class Game {
 
     // Aim
     const [rx, ry] = inp.stick(2, 3, 0.25);
+    const tRight = inp.touch.right;
+    const tMg = inp.touch.mg;
+    const usingTouchAim =
+      inp.usingTouch ||
+      (this.showTouchControls && (tRight.active || (tMg.active && tMg.aiming)));
     if (inp.usingGamepad) {
       if (rx || ry) this.padAim = Math.atan2(ry, rx);
       p.aim = this.padAim ?? p.turretAngle;
       this.aimX = p.x + Math.cos(p.aim) * 320;
       this.aimY = p.y + Math.sin(p.aim) * 320;
+    } else if (usingTouchAim) {
+      if (tRight.active && tRight.mag > 0) this.touchAim = tRight.angle;
+      else if (tMg.active && tMg.aiming) this.touchAim = tMg.aimAngle;
+      p.aim = this.touchAim ?? p.turretAngle;
+      const aimDist = clamp((Math.min(this.w, this.h) / this.cam.zoom) * 0.36, 180, 320);
+      this.aimX = p.x + Math.cos(p.aim) * aimDist;
+      this.aimY = p.y + Math.sin(p.aim) * aimDist;
     } else {
       const [wx, wy] = this.screenToWorld(inp.mouseX, inp.mouseY);
       this.aimX = wx;
@@ -338,13 +433,13 @@ export class Game {
       p.aim = Math.atan2(wy - p.y, wx - p.x);
     }
 
-    p.wantBoost = inp.down('ShiftLeft', 'ShiftRight') || inp.padButton(0) || inp.padButton(4);
-    const fire = inp.mouseDown[0] || inp.padValue(7) > 0.3;
-    const mg = inp.mouseDown[2] || inp.padValue(6) > 0.3 || inp.padButton(5) || inp.down('KeyF');
+    p.wantBoost = inp.down('ShiftLeft', 'ShiftRight') || inp.padButton(0) || inp.padButton(4) || (this.showTouchControls && inp.touch.bst.active);
+    const fire = inp.mouseDown[0] || inp.padValue(7) > 0.3 || (this.showTouchControls && tRight.firing);
+    const mg = inp.mouseDown[2] || inp.padValue(6) > 0.3 || inp.padButton(5) || inp.down('KeyF') || (this.showTouchControls && tMg.active);
     if (fire && p.fireCannon()) this.stats.shots++;
     if (mg) p.fireMg();
     this.missileCooldown -= dt;
-    if ((inp.hit('Space', 'KeyE') || inp.padHit(1) || inp.padHit(2)) && this.missileCooldown <= 0) this.fireMissiles();
+    if ((inp.hit('Space', 'KeyE') || inp.padHit(1) || inp.padHit(2) || (this.showTouchControls && inp.touch.mslPressed)) && this.missileCooldown <= 0) this.fireMissiles();
   }
 
   fireMissiles() {
@@ -797,6 +892,7 @@ export class Game {
   onPlayerDeath() {
     this.state = 'gameover';
     this.deathTimer = 0;
+    this.input.touch.resetAll();
     this.targetTimeScale = 0.3;
     this.delayed.push({ t: 0.5, fn: () => (this.targetTimeScale = 1) });
     this.addShake(1);
@@ -1032,6 +1128,7 @@ export class Game {
     this.upgradeSel = 0;
     this.upgradeT = 0;
     this.state = 'upgrade';
+    this.input.touch.resetAll();
     audio.play('powerup');
   }
 
@@ -1043,6 +1140,13 @@ export class Game {
     for (let i = 0; i < n; i++) if (inp.hit('Digit' + (i + 1))) return this.chooseUpgrade(i);
     if (inp.hit('ArrowLeft', 'KeyA') || inp.padHit(14)) this.upgradeSel = (this.upgradeSel + n - 1) % n;
     if (inp.hit('ArrowRight', 'KeyD') || inp.padHit(15)) this.upgradeSel = (this.upgradeSel + 1) % n;
+    if (inp.touchTap) {
+      const tapHit = HUD.upgradeHover(this, inp.touchTap.x, inp.touchTap.y);
+      if (tapHit >= 0) {
+        this.upgradeSel = tapHit;
+        return this.chooseUpgrade(tapHit);
+      }
+    }
     const hover = HUD.upgradeHover(this, inp.mouseX, inp.mouseY);
     if (hover >= 0) this.upgradeSel = hover;
     if (inp.hit('Enter', 'Space') || inp.padHit(0) || (inp.mouseClicked[0] && hover >= 0)) this.chooseUpgrade(this.upgradeSel);
@@ -1054,6 +1158,7 @@ export class Game {
     this.upgradeCounts[u.id] = (this.upgradeCounts[u.id] || 0) + 1;
     this.player.hp = Math.min(this.player.maxHp, this.player.hp + 20);
     this.state = 'playing';
+    this.input.touch.resetAll();
     this.timeScale = 1;
     this.waveState = 'intermission';
     this.waveTimer = 1.5;
@@ -1133,6 +1238,7 @@ export class Game {
   // --- Render ---------------------------------------------------------------------------------------
 
   render(dt) {
+    this.canvas.style.cursor = this.touchUiMode === 'on' && !this.input.usingTouch ? 'default' : 'none';
     const ctx = this.ctx;
     const dpr = this.dpr;
     const c = this.cam;
