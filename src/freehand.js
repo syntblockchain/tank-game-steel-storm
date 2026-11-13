@@ -1,7 +1,7 @@
-// AirGesture-style right-hand webcam control (4 triangles + center circle)
-// replacing / driving the right joystick on both laptop and mobile.
+// AirGesture-style 1-hand (right) and 2-hand (left move+alt-fire / right aim+cannon)
+// webcam control (4 triangles + center circle per hand zone) on both laptop and mobile.
 // Uses MediaPipe Hands when reachable, with an offline pure-JS CV tracker fallback
-// and an interactive pad fallback when no camera is available.
+// and an interactive multi-touch / mouse pad fallback when no camera is available.
 
 import { clamp, TAU } from './util.js';
 import { fontSpec, tr } from './i18n.js';
@@ -29,8 +29,8 @@ export function classifyAirGesture(x, y, w, h, handState, circleRatio = 0.20) {
   const cy = h / 2;
   const r = Math.min(w, h) * circleRatio;
   const d = Math.hypot(x - cx, y - cy);
-  const nx = (x - cx) / Math.max(1, w / 2);
-  const ny = (y - cy) / Math.max(1, h / 2);
+  const nx = (x - cx) / Math.max(1e-4, w / 2);
+  const ny = (y - cy) / Math.max(1e-4, h / 2);
 
   let zone = 'circle';
   if (d > r) {
@@ -94,24 +94,57 @@ export function palmCenter(lm) {
   return { x: clamp(sx / ids.length, 0, 1), y: clamp(sy / ids.length, 0, 1) };
 }
 
-export function pickRightHand(results) {
+// Assigns detected hands into { left, right }.
+// Rule: when only 1 hand is visible (even in 2-hand mode), it is ALWAYS assigned as the right hand.
+export function pickHands(results, twoHand = false) {
   const lms = results && results.multiHandLandmarks;
-  if (!lms || !lms.length) return null;
-  if (lms.length === 1) return lms[0];
+  if (!lms || !lms.length) return { left: null, right: null };
+  if (lms.length === 1) return { left: null, right: lms[0] };
+
   const handed = results.multiHandedness || [];
-  let bestIdx = -1;
-  let bestScore = -1e9;
-  for (let i = 0; i < lms.length; i++) {
+  const rightScore = (i) => {
     const h = handed[i];
-    const isRight = h && (h.label === 'Right' || h.displayName === 'Right');
-    const c = palmCenter(lms[i]);
-    const score = (isRight ? 10 : 0) + c.x;
-    if (score > bestScore) {
-      bestScore = score;
-      bestIdx = i;
+    const lbl = h && (h.label || h.displayName);
+    const bias = lbl === 'Right' ? 0.30 : lbl === 'Left' ? -0.30 : 0;
+    return palmCenter(lms[i]).x + bias;
+  };
+
+  let rightIdx = 0;
+  let bestR = -1e9;
+  for (let i = 0; i < lms.length; i++) {
+    const sc = rightScore(i);
+    if (sc > bestR) {
+      bestR = sc;
+      rightIdx = i;
     }
   }
-  return lms[bestIdx >= 0 ? bestIdx : 0];
+  if (!twoHand) return { left: null, right: lms[rightIdx] };
+
+  let leftIdx = -1;
+  let bestL = 1e9;
+  for (let i = 0; i < lms.length; i++) {
+    if (i === rightIdx) continue;
+    const sc = rightScore(i);
+    if (sc < bestL) {
+      bestL = sc;
+      leftIdx = i;
+    }
+  }
+  return { left: leftIdx >= 0 ? lms[leftIdx] : null, right: lms[rightIdx] };
+}
+
+export function pickRightHand(results) {
+  return pickHands(results, false).right;
+}
+
+function makeCvTrack(initX = 0.5) {
+  return {
+    prevOpen: false,
+    smoothX: initX,
+    smoothY: 0.5,
+    hasLock: false,
+    missCount: 0,
+  };
 }
 
 // Offline pure-JS skin + motion blob tracker fallback when MediaPipe is unavailable.
@@ -122,11 +155,8 @@ export class FallbackCvTracker {
     this.canvas = null;
     this.ctx = null;
     this.prevGray = null;
-    this.prevOpen = false;
-    this.smoothX = 0.5;
-    this.smoothY = 0.5;
-    this.hasLock = false;
-    this.missCount = 0;
+    this._right = makeCvTrack(0.65);
+    this._left = makeCvTrack(0.25);
   }
 
   _ensureCanvas() {
@@ -138,9 +168,52 @@ export class FallbackCvTracker {
     this.prevGray = new Uint8Array(this.w * this.h);
   }
 
-  process(video) {
+  _buildRes(blob, track, mask) {
+    const { w, h } = this;
+    const alpha = track.hasLock ? 0.45 : 1;
+    track.smoothX += (blob.cxN - track.smoothX) * alpha;
+    track.smoothY += (blob.cyN - track.smoothY) * alpha;
+    track.hasLock = true;
+    track.missCount = 0;
+
+    const bw = Math.max(1, blob.maxX - blob.minX + 1);
+    const bh = Math.max(1, blob.maxY - blob.minY + 1);
+    const solidity = blob.area / (bw * bh);
+
+    const probeY = clamp(Math.round(blob.minY + bh * 0.28), 0, h - 1);
+    let runs = 0, inRun = false;
+    for (let x = blob.minX; x <= blob.maxX; x++) {
+      const on = mask[probeY * w + x] === 1;
+      if (on && !inRun) runs++;
+      inRun = on;
+    }
+
+    const state = track.prevOpen
+      ? (solidity > 0.62 && runs <= 2 ? 'closed' : 'open')
+      : (solidity < 0.49 || runs >= 3 ? 'open' : 'closed');
+    track.prevOpen = state === 'open';
+
+    return {
+      x: track.smoothX,
+      y: track.smoothY,
+      state,
+      bbox: {
+        x0: blob.minX / w,
+        y0: blob.minY / h,
+        x1: (blob.maxX + 1) / w,
+        y1: (blob.maxY + 1) / h,
+      },
+    };
+  }
+
+  _miss(track) {
+    track.missCount++;
+    if (track.missCount > 8) track.hasLock = false;
+  }
+
+  process(video, twoHand = false) {
     this._ensureCanvas();
-    if (!this.ctx) return null;
+    if (!this.ctx) return twoHand ? { left: null, right: null } : null;
     const { w, h, ctx } = this;
     ctx.save();
     ctx.scale(-1, 1);
@@ -162,17 +235,15 @@ export class FallbackCvTracker {
         this.prevGray[idx] = lum;
 
         const isSkin = lum > 42 && cb >= 76 && cb <= 129 && cr >= 133 && cr <= 176 && r > g * 1.03 && r > b;
-        if (isSkin && (motion > 7 || (this.hasLock && Math.hypot(x / w - this.smoothX, y / h - this.smoothY) < 0.28))) {
-          mask[idx] = 1;
-        }
+        const nearR = this._right.hasLock && Math.hypot(x / w - this._right.smoothX, y / h - this._right.smoothY) < 0.28;
+        const nearL = twoHand && this._left.hasLock && Math.hypot(x / w - this._left.smoothX, y / h - this._left.smoothY) < 0.28;
+        if (isSkin && (motion > 7 || nearR || nearL)) mask[idx] = 1;
       }
     }
 
-    // Connected component search over mask
     const seen = new Uint8Array(w * h);
     const queue = new Int32Array(w * h);
-    let bestBlob = null;
-    let bestScore = 0;
+    const blobs = [];
 
     for (let i = 0; i < w * h; i++) {
       if (!mask[i] || seen[i]) continue;
@@ -202,65 +273,87 @@ export class FallbackCvTracker {
         }
       }
       if (area < 24) continue;
-      const cxN = sx / area / w;
-      const cyN = sy / area / h;
-      const rightBias = 0.7 + cxN * 0.5;
-      const lockBonus = this.hasLock && Math.hypot(cxN - this.smoothX, cyN - this.smoothY) < 0.22 ? 1.5 : 1.0;
-      const score = area * rightBias * lockBonus;
-      if (score > bestScore) {
-        bestScore = score;
-        bestBlob = { area, cxN, cyN, minX, maxX, minY, maxY };
+      blobs.push({ area, cxN: sx / area / w, cyN: sy / area / h, minX, maxX, minY, maxY });
+    }
+
+    if (!twoHand) {
+      let bestBlob = null;
+      let bestScore = 0;
+      for (const b of blobs) {
+        const rightBias = 0.7 + b.cxN * 0.5;
+        const lockBonus = this._right.hasLock && Math.hypot(b.cxN - this._right.smoothX, b.cyN - this._right.smoothY) < 0.22 ? 1.5 : 1.0;
+        const sc = b.area * rightBias * lockBonus;
+        if (sc > bestScore) {
+          bestScore = sc;
+          bestBlob = b;
+        }
       }
+      if (!bestBlob) {
+        this._miss(this._right);
+        return null;
+      }
+      return this._buildRes(bestBlob, this._right, mask);
     }
 
-    if (!bestBlob) {
-      this.missCount++;
-      if (this.missCount > 8) this.hasLock = false;
-      return null;
+    if (!blobs.length) {
+      this._miss(this._right);
+      this._miss(this._left);
+      return { left: null, right: null };
     }
 
-    this.missCount = 0;
-    const alpha = this.hasLock ? 0.45 : 1;
-    this.smoothX += (bestBlob.cxN - this.smoothX) * alpha;
-    this.smoothY += (bestBlob.cyN - this.smoothY) * alpha;
-    this.hasLock = true;
-
-    const bw = Math.max(1, bestBlob.maxX - bestBlob.minX + 1);
-    const bh = Math.max(1, bestBlob.maxY - bestBlob.minY + 1);
-    const solidity = bestBlob.area / (bw * bh);
-
-    // Count distinct finger runs across top 35% of the blob
-    const probeY = clamp(Math.round(bestBlob.minY + bh * 0.28), 0, h - 1);
-    let runs = 0, inRun = false;
-    for (let x = bestBlob.minX; x <= bestBlob.maxX; x++) {
-      const on = mask[probeY * w + x] === 1;
-      if (on && !inRun) runs++;
-      inRun = on;
+    blobs.sort((a, b) => b.area - a.area);
+    const primary = blobs[0];
+    // Find a clearly separated second hand blob (area >= 35% of primary and X gap >= 0.16)
+    const secondary = blobs.slice(1).find((b) => b.area >= primary.area * 0.35 && Math.hypot(b.cxN - primary.cxN, b.cyN - primary.cyN) >= 0.16);
+    if (!secondary) {
+      // Only 1 hand visible -> treat as right hand
+      this._miss(this._left);
+      return { left: null, right: this._buildRes(primary, this._right, mask) };
     }
-
-    const state = this.prevOpen
-      ? (solidity > 0.62 && runs <= 2 ? 'closed' : 'open')
-      : (solidity < 0.49 || runs >= 3 ? 'open' : 'closed');
-    this.prevOpen = state === 'open';
-
+    const rightBlob = primary.cxN >= secondary.cxN ? primary : secondary;
+    const leftBlob = primary.cxN >= secondary.cxN ? secondary : primary;
     return {
-      x: this.smoothX,
-      y: this.smoothY,
-      state,
-      bbox: {
-        x0: bestBlob.minX / w,
-        y0: bestBlob.minY / h,
-        x1: (bestBlob.maxX + 1) / w,
-        y1: (bestBlob.maxY + 1) / h,
-      },
+      left: this._buildRes(leftBlob, this._left, mask),
+      right: this._buildRes(rightBlob, this._right, mask),
     };
   }
+}
+
+function makeHandSlot() {
+  return {
+    detected: false,
+    handX: 0.5,
+    handY: 0.5,
+    localX: 0.5,
+    localY: 0.5,
+    handState: 'none',
+    landmarks: null,
+    bbox: null,
+    gesture: classifyAirGesture(0.5, 0.5, 1, 1, 'none'),
+    lastDetectAt: 0,
+    padPointerId: null,
+    padOpen: false,
+    _mpState: 'none',
+  };
+}
+
+function resetHandSlot(slot) {
+  slot.detected = false;
+  slot.handState = 'none';
+  slot.landmarks = null;
+  slot.bbox = null;
+  slot.padPointerId = null;
+  slot.padOpen = false;
+  slot._mpState = 'none';
+  slot.gesture = classifyAirGesture(0.5, 0.5, 1, 1, 'none');
 }
 
 export class FreeHandController {
   constructor() {
     this.enabled = false;
-    this.mode = 'smart'; // 'smart' (AirGesture move+aim when left idle, right stick aim when driving) | 'aim' (aim+fire only)
+    this.twoHand = false;
+    this.mode = 'smart'; // 'smart' | 'aim' (for 1-hand, or single-hand fallback in 2-hand)
+    this.leftWeapon = 'auto'; // 'auto' (MSL+MG) | 'msl' | 'mg'
     this.status = 'off'; // 'off' | 'loading' | 'ready' | 'fallback' | 'nocam'
     this.backend = 'none'; // 'none' | 'mediapipe' | 'cv' | 'pad'
     this.video = null;
@@ -269,34 +362,75 @@ export class FreeHandController {
     this._busy = false;
     this._lastSend = 0;
     this._cv = new FallbackCvTracker();
-    this._mpState = 'none';
 
-    this.detected = false;
-    this.handX = 0.5;
-    this.handY = 0.5;
-    this.handState = 'none'; // 'open' | 'closed' | 'none'
-    this.landmarks = null;
-    this.bbox = null;
-    this.gesture = classifyAirGesture(0.5, 0.5, 1, 1, 'none');
+    this.left = makeHandSlot();
+    this.right = makeHandSlot();
+    this._syncLegacy();
+  }
 
-    // Interactive pad state when webcam is absent/denied
-    this.padPointerId = null;
-    this.padOpen = false;
-    this.lastDetectAt = 0;
+  _boxAspect() {
+    return this.twoHand ? 1.12 : 1.33;
+  }
+
+  _recomputeGesture(slot) {
+    if (!slot.detected || slot.handState === 'none') {
+      slot.gesture = classifyAirGesture(0.5, 0.5, 1, 1, 'none');
+      return;
+    }
+    const asp = this._boxAspect();
+    slot.gesture = classifyAirGesture(slot.localX * asp, slot.localY, asp, 1, slot.handState);
+  }
+
+  _syncLegacy() {
+    const r = this.right;
+    this.detected = r.detected;
+    this.handX = r.handX;
+    this.handY = r.handY;
+    this.handState = r.handState;
+    this.landmarks = r.landmarks;
+    this.bbox = r.bbox;
+    this.gesture = r.gesture;
+    this.lastDetectAt = r.lastDetectAt;
+    this.padPointerId = r.padPointerId;
+    this.padOpen = r.padOpen;
   }
 
   toggleMode() {
     this.mode = this.mode === 'smart' ? 'aim' : 'smart';
   }
 
+  toggleTwoHand() {
+    this.twoHand = !this.twoHand;
+    if (!this.twoHand) {
+      resetHandSlot(this.left);
+      if (this.right.detected) {
+        this.right.localX = this.right.handX;
+        this.right.localY = this.right.handY;
+        this._recomputeGesture(this.right);
+      }
+    } else if (this.right.detected) {
+      this.right.localX = clamp((this.right.handX - 0.5) * 2, 0, 1);
+      this.right.localY = this.right.handY;
+      this._recomputeGesture(this.right);
+    }
+    this._syncLegacy();
+  }
+
+  cycleLeftWeapon() {
+    const order = ['auto', 'msl', 'mg'];
+    this.leftWeapon = order[(order.indexOf(this.leftWeapon) + 1) % order.length];
+  }
+
+  hasAnyPadPointer() {
+    return this.left.padPointerId !== null || this.right.padPointerId !== null;
+  }
+
   async enable() {
     if (this.enabled) return;
     this.enabled = true;
-    this.detected = false;
-    this.handState = 'none';
-    this.landmarks = null;
-    this.bbox = null;
-    this.gesture = classifyAirGesture(0.5, 0.5, 1, 1, 'none');
+    resetHandSlot(this.left);
+    resetHandSlot(this.right);
+    this._syncLegacy();
 
     if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       this.status = 'nocam';
@@ -323,7 +457,6 @@ export class FreeHandController {
       await video.play().catch(() => {});
       this.video = video;
 
-      // Start offline CV fallback immediately while MediaPipe initializes in background
       this.backend = 'cv';
       this.status = 'fallback';
       this._initMediaPipe();
@@ -338,13 +471,9 @@ export class FreeHandController {
     this.enabled = false;
     this.status = 'off';
     this.backend = 'none';
-    this.detected = false;
-    this.handState = 'none';
-    this.landmarks = null;
-    this.bbox = null;
-    this.padPointerId = null;
-    this.padOpen = false;
-    this.gesture = classifyAirGesture(0.5, 0.5, 1, 1, 'none');
+    resetHandSlot(this.left);
+    resetHandSlot(this.right);
+    this._syncLegacy();
     if (this.stream) {
       this.stream.getTracks().forEach((t) => t.stop());
       this.stream = null;
@@ -413,49 +542,111 @@ export class FreeHandController {
     return tryLoad('./assets/mediapipe/hands/').catch(() => tryLoad(MP_CDN));
   }
 
-  _onMpResults(results) {
-    if (!this.enabled || this.backend !== 'mediapipe') return;
-    const lm = pickRightHand(results);
+  _applyLmToSlot(slot, lm, isLeft, now) {
     if (!lm) {
-      if (performance.now() - this.lastDetectAt > 180) {
-        this.detected = false;
-        this.handState = 'none';
-        this.landmarks = null;
-        this.gesture = classifyAirGesture(0.5, 0.5, 1, 1, 'none');
+      if (now - slot.lastDetectAt > 180) {
+        slot.detected = false;
+        slot.handState = 'none';
+        slot.landmarks = null;
+        slot.gesture = classifyAirGesture(0.5, 0.5, 1, 1, 'none');
       }
       return;
     }
     const c = palmCenter(lm);
-    const prevOpen = this._mpState === 'open';
+    const prevOpen = slot._mpState === 'open';
     const state = classifyLandmarksOpenClosed(lm, prevOpen);
-    this._mpState = state;
-    this.landmarks = lm;
-    this.bbox = null;
-    this.detected = true;
-    this.handX = c.x;
-    this.handY = c.y;
-    this.handState = state;
-    this.lastDetectAt = performance.now();
-    this.gesture = classifyAirGesture(c.x, c.y, 1, 1, state);
+    slot._mpState = state;
+    slot.landmarks = lm;
+    slot.bbox = null;
+    slot.detected = true;
+    slot.handX = c.x;
+    slot.handY = c.y;
+    slot.localX = this.twoHand
+      ? (isLeft ? clamp(c.x * 2, 0, 1) : clamp((c.x - 0.5) * 2, 0, 1))
+      : c.x;
+    slot.localY = c.y;
+    slot.handState = state;
+    slot.lastDetectAt = now;
+    this._recomputeGesture(slot);
   }
 
-  setPadInput(nx, ny, open) {
-    this.detected = true;
-    this.handX = clamp(nx, 0, 1);
-    this.handY = clamp(ny, 0, 1);
-    this.handState = open ? 'open' : 'closed';
-    this.landmarks = null;
-    this.bbox = null;
-    this.lastDetectAt = performance.now();
-    this.gesture = classifyAirGesture(this.handX, this.handY, 1, 1, this.handState);
+  _onMpResults(results) {
+    if (!this.enabled || this.backend !== 'mediapipe') return;
+    const now = performance.now();
+    const { left, right } = pickHands(results, this.twoHand);
+    this._applyLmToSlot(this.right, right, false, now);
+    if (this.twoHand) this._applyLmToSlot(this.left, left, true, now);
+    else resetHandSlot(this.left);
+    this._syncLegacy();
   }
 
-  clearPadInput() {
-    this.padPointerId = null;
-    if (this.backend === 'pad') {
-      this.detected = false;
-      this.handState = 'none';
-      this.gesture = classifyAirGesture(0.5, 0.5, 1, 1, 'none');
+  setPadInput(nx, ny, open, side = 'auto') {
+    const cx = clamp(nx, 0, 1);
+    const cy = clamp(ny, 0, 1);
+    let targetSide = side;
+    if (!this.twoHand) targetSide = 'right';
+    else if (targetSide === 'auto') targetSide = cx < 0.5 ? 'left' : 'right';
+
+    const slot = targetSide === 'left' ? this.left : this.right;
+    slot.detected = true;
+    slot.handState = open ? 'open' : 'closed';
+    slot.landmarks = null;
+    slot.bbox = null;
+    slot.lastDetectAt = performance.now();
+
+    if (!this.twoHand) {
+      slot.handX = cx;
+      slot.handY = cy;
+      slot.localX = cx;
+      slot.localY = cy;
+    } else if (targetSide === 'left') {
+      slot.handX = clamp(cx, 0, 0.5);
+      slot.handY = cy;
+      slot.localX = clamp(slot.handX * 2, 0, 1);
+      slot.localY = cy;
+    } else {
+      slot.handX = clamp(cx, 0.5, 1);
+      slot.handY = cy;
+      slot.localX = clamp((slot.handX - 0.5) * 2, 0, 1);
+      slot.localY = cy;
+    }
+    this._recomputeGesture(slot);
+    this._syncLegacy();
+  }
+
+  clearPadInput(side = 'all') {
+    const clearSlot = (slot) => {
+      slot.padPointerId = null;
+      if (this.backend === 'pad') {
+        slot.detected = false;
+        slot.handState = 'none';
+        slot.gesture = classifyAirGesture(0.5, 0.5, 1, 1, 'none');
+      }
+    };
+    if (side === 'left' || side === 'all') clearSlot(this.left);
+    if (side === 'right' || side === 'all') clearSlot(this.right);
+    this._syncLegacy();
+  }
+
+  _applyCvToSlot(slot, res, isLeft, now) {
+    if (res) {
+      slot.detected = true;
+      slot.handX = res.x;
+      slot.handY = res.y;
+      slot.localX = this.twoHand
+        ? (isLeft ? clamp(res.x * 2, 0, 1) : clamp((res.x - 0.5) * 2, 0, 1))
+        : res.x;
+      slot.localY = res.y;
+      slot.handState = res.state;
+      slot.bbox = res.bbox;
+      slot.landmarks = null;
+      slot.lastDetectAt = now;
+      this._recomputeGesture(slot);
+    } else if (now - slot.lastDetectAt > 200) {
+      slot.detected = false;
+      slot.handState = 'none';
+      slot.bbox = null;
+      slot.gesture = classifyAirGesture(0.5, 0.5, 1, 1, 'none');
     }
   }
 
@@ -474,58 +665,61 @@ export class FreeHandController {
     if (this.backend === 'cv' && this.video && this.video.readyState >= 2) {
       if (nowMs - this._lastSend >= 40) {
         this._lastSend = nowMs;
-        const res = this._cv.process(this.video);
-        if (res) {
-          this.detected = true;
-          this.handX = res.x;
-          this.handY = res.y;
-          this.handState = res.state;
-          this.bbox = res.bbox;
-          this.landmarks = null;
-          this.lastDetectAt = nowMs;
-          this.gesture = classifyAirGesture(res.x, res.y, 1, 1, res.state);
-        } else if (nowMs - this.lastDetectAt > 200) {
-          this.detected = false;
-          this.handState = 'none';
-          this.bbox = null;
-          this.gesture = classifyAirGesture(0.5, 0.5, 1, 1, 'none');
+        const res = this._cv.process(this.video, this.twoHand);
+        if (!this.twoHand) {
+          this._applyCvToSlot(this.right, res, false, nowMs);
+          resetHandSlot(this.left);
+        } else {
+          this._applyCvToSlot(this.right, res ? res.right : null, false, nowMs);
+          this._applyCvToSlot(this.left, res ? res.left : null, true, nowMs);
         }
+        this._syncLegacy();
       }
     }
   }
 }
 
-export function getFreeHandRect(layout) {
+export function getFreeHandRect(layout, twoHand = false) {
   const { w, h, narrow, padR, padB, minimap, buttons } = layout;
   if (w >= 960) {
     const topY = minimap.y + minimap.size + 14;
     const footerH = 24;
-    const maxBottom = buttons.msl.y - buttons.msl.r - 10;
+    const maxBottom = Math.min(buttons.msl.y - buttons.msl.r - 10, h - 196);
+    if (twoHand) {
+      const pw = clamp(Math.round(w * 0.24), 220, 292);
+      const ph = clamp(Math.min(Math.round(pw * 0.44), maxBottom - topY - footerH), 86, 132);
+      return { x: w - padR - pw, y: topY, w: pw, h: ph, footerH };
+    }
     const ph = clamp(maxBottom - topY - footerH, 90, 174);
     const pw = Math.round((ph * 4) / 3);
+    return { x: w - padR - pw, y: topY, w: pw, h: ph, footerH };
+  }
+  if (!narrow || h < 500) {
+    const footerH = 22;
+    if (twoHand) {
+      const pw = clamp(Math.round(w * 0.34), 178, 264);
+      const ph = clamp(Math.round(pw * 0.40), 68, 108);
+      return {
+        x: Math.round(w / 2 - pw / 2),
+        y: h - padB - ph - footerH,
+        w: pw,
+        h: ph,
+        footerH,
+      };
+    }
+    const pw = clamp(Math.round(w * 0.2), 112, 176);
+    const ph = Math.round(pw * 0.72);
     return {
-      x: w - padR - pw,
-      y: topY,
+      x: Math.round(w / 2 - pw / 2),
+      y: h - padB - ph - footerH,
       w: pw,
       h: ph,
       footerH,
     };
   }
-  if (!narrow || h < 500) {
-    // Mobile landscape (even compact 568x320): place cleanly at bottom-center between the two joysticks
-    const pw = clamp(Math.round(w * 0.2), 112, 176);
-    const ph = Math.round(pw * 0.72);
-    return {
-      x: Math.round(w / 2 - pw / 2),
-      y: h - padB - ph - 22,
-      w: pw,
-      h: ph,
-      footerH: 22,
-    };
-  }
-  // Mobile portrait: right side under minimap + score, well above tank center and right buttons
-  const pw = 148;
-  const ph = 110;
+  // Mobile portrait
+  const pw = twoHand ? clamp(w - padR * 2, 200, 236) : 148;
+  const ph = twoHand ? 96 : 110;
   return {
     x: w - padR - pw,
     y: minimap.y + minimap.size + 62,
@@ -536,36 +730,131 @@ export function getFreeHandRect(layout) {
 }
 
 export function hitFreeHandPanel(x, y, layout, fh = null) {
-  const r = getFreeHandRect(layout);
+  const twoHand = !!(fh && fh.twoHand);
+  const r = getFreeHandRect(layout, twoHand);
   if (x >= r.x && x <= r.x + r.w && y >= r.y + r.h && y <= r.y + r.h + r.footerH + 4) {
+    if (twoHand) {
+      if (fh && fh.backend === 'pad') {
+        if (x < r.x + r.w * 0.44) return 'leftWeapon';
+        if (x < r.x + r.w * 0.72) return 'padOpenL';
+        return 'padOpenR';
+      }
+      return x < r.x + r.w * 0.56 ? 'leftWeapon' : 'twoHand';
+    }
     if (fh && fh.backend === 'pad' && x >= r.x + r.w * 0.62) return 'padOpen';
     return 'mode';
   }
   if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+    if (twoHand) return x < r.x + r.w / 2 ? 'padL' : 'padR';
     return 'pad';
   }
   return null;
+}
+
+function drawZoneGrid(ctx, bx, by, bw, bh, slot, lang, isLeft) {
+  const cx = bx + bw / 2;
+  const cy = by + bh / 2;
+  const rad = Math.min(bw, bh) * 0.20;
+  const g = slot.gesture;
+
+  const tris = [
+    ['up', [[bx, by], [bx + bw, by], [cx, cy]], 'rgba(79,195,247,0.16)', 'rgba(79,195,247,0.44)'],
+    ['down', [[bx, by + bh], [bx + bw, by + bh], [cx, cy]], 'rgba(79,195,247,0.16)', 'rgba(79,195,247,0.44)'],
+    ['left', [[bx, by], [bx, by + bh], [cx, cy]], 'rgba(232,211,106,0.14)', 'rgba(232,211,106,0.42)'],
+    ['right', [[bx + bw, by], [bx + bw, by + bh], [cx, cy]], 'rgba(232,211,106,0.14)', 'rgba(232,211,106,0.42)'],
+  ];
+
+  const fireFill = isLeft ? 'rgba(190,110,255,0.42)' : 'rgba(255,106,58,0.42)';
+  for (const [zone, pts, idleFill, activeFill] of tris) {
+    const active = slot.detected && g.zone === zone;
+    ctx.fillStyle = active ? (g.fire ? fireFill : activeFill) : idleFill;
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    ctx.lineTo(pts[1][0], pts[1][1]);
+    ctx.lineTo(pts[2][0], pts[2][1]);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  ctx.strokeStyle = isLeft ? 'rgba(130,220,255,0.35)' : 'rgba(232,211,106,0.35)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(bx, by);
+  ctx.lineTo(bx + bw, by + bh);
+  ctx.moveTo(bx + bw, by);
+  ctx.lineTo(bx, by + bh);
+  ctx.stroke();
+
+  const inCircle = slot.detected && g.zone === 'circle';
+  ctx.fillStyle = inCircle
+    ? (g.fire ? (isLeft ? 'rgba(190,110,255,0.52)' : 'rgba(255,106,58,0.52)') : 'rgba(100,150,255,0.42)')
+    : 'rgba(60,100,180,0.22)';
+  ctx.beginPath();
+  ctx.arc(cx, cy, rad, 0, TAU);
+  ctx.fill();
+  ctx.strokeStyle = inCircle && g.fire ? (isLeft ? '#d49bff' : '#ff8a3a') : 'rgba(140,190,255,0.75)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  ctx.font = fontSpec(lang, Math.round(clamp(bh * 0.1, 8.5, 12)), 'mono');
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.fillText('▲', cx, by + bh * 0.18);
+  ctx.fillText('▼', cx, by + bh * 0.84);
+  ctx.fillText('◀', bx + bw * 0.14, cy);
+  ctx.fillText('▶', bx + bw * 0.86, cy);
+}
+
+function drawHandGraphic(ctx, x, y, w, h, slot, isLeft) {
+  if (!slot.detected) return;
+  const g = slot.gesture;
+  const activeCol = g.fire
+    ? (isLeft ? '#d49bff' : '#ff4a3a')
+    : (isLeft ? '#64e8ff' : '#7dff8a');
+  if (slot.landmarks) {
+    ctx.strokeStyle = activeCol;
+    ctx.lineWidth = 1.5;
+    for (const [a, b] of MP_HAND_CONNECTIONS) {
+      const la = slot.landmarks[a], lb = slot.landmarks[b];
+      ctx.beginPath();
+      ctx.moveTo(x + la.x * w, y + la.y * h);
+      ctx.lineTo(x + lb.x * w, y + lb.y * h);
+      ctx.stroke();
+    }
+  } else if (slot.bbox) {
+    ctx.strokeStyle = activeCol;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(
+      x + slot.bbox.x0 * w,
+      y + slot.bbox.y0 * h,
+      (slot.bbox.x1 - slot.bbox.x0) * w,
+      (slot.bbox.y1 - slot.bbox.y0) * h
+    );
+  }
+  const hx = x + slot.handX * w;
+  const hy = y + slot.handY * h;
+  ctx.fillStyle = activeCol;
+  ctx.beginPath();
+  ctx.arc(hx, hy, 4.5, 0, TAU);
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
 }
 
 export function drawFreeHandOverlay(game, ctx, layout) {
   const fh = game.freeHand;
   if (!fh || !fh.enabled || game.state !== 'playing') return;
 
-  const r = getFreeHandRect(layout);
+  const r = getFreeHandRect(layout, fh.twoHand);
   const { x, y, w, h, footerH } = r;
-  const cx = x + w / 2;
-  const cy = y + h / 2;
-  const rad = Math.min(w, h) * 0.20;
-  const g = fh.gesture;
   const t = tr(game.lang);
 
   ctx.save();
-
-  // Panel backing
   ctx.fillStyle = 'rgba(10,14,12,0.82)';
   ctx.fillRect(x, y, w, h + footerH);
 
-  // Mirrored webcam feed inside (x, y, w, h)
   ctx.save();
   ctx.beginPath();
   ctx.rect(x, y, w, h);
@@ -583,135 +872,158 @@ export function drawFreeHandOverlay(game, ctx, layout) {
     ctx.fillRect(x, y, w, h);
   }
 
-  // 4 triangles overlay (Up, Down, Left, Right) + center Circle matching AirGesture
-  const tris = [
-    ['up', [[x, y], [x + w, y], [cx, cy]], 'rgba(79,195,247,0.16)', 'rgba(79,195,247,0.44)'],
-    ['down', [[x, y + h], [x + w, y + h], [cx, cy]], 'rgba(79,195,247,0.16)', 'rgba(79,195,247,0.44)'],
-    ['left', [[x, y], [x, y + h], [cx, cy]], 'rgba(232,211,106,0.14)', 'rgba(232,211,106,0.42)'],
-    ['right', [[x + w, y], [x + w, y + h], [cx, cy]], 'rgba(232,211,106,0.14)', 'rgba(232,211,106,0.42)'],
-  ];
+  if (!fh.twoHand) {
+    drawZoneGrid(ctx, x, y, w, h, fh.right, game.lang, false);
+    drawHandGraphic(ctx, x, y, w, h, fh.right, false);
 
-  for (const [zone, pts, idleFill, activeFill] of tris) {
-    const active = fh.detected && g.zone === zone;
-    ctx.fillStyle = active ? (g.fire ? 'rgba(255,106,58,0.42)' : activeFill) : idleFill;
+    const g = fh.right.gesture;
+    const statusText = !fh.right.detected
+      ? (fh.status === 'nocam' ? t.freeHandPadHint : fh.status === 'loading' ? t.freeHandLoading : t.freeHandShow)
+      : g.fire
+        ? t.freeHandFire
+        : t.freeHandZones[g.zone] || t.freeHandIdle;
+    ctx.fillStyle = g.fire ? 'rgba(190,45,20,0.86)' : 'rgba(10,14,12,0.72)';
+    ctx.fillRect(x, y, w, 18);
+    ctx.font = fontSpec(game.lang, 10, 'mono');
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = g.fire ? '#fff4d0' : fh.right.detected ? '#7dff8a' : '#e8d36a';
+    ctx.fillText(statusText, x + w / 2, y + 9);
+  } else {
+    const hw = w / 2;
+    drawZoneGrid(ctx, x, y, hw, h, fh.left, game.lang, true);
+    drawZoneGrid(ctx, x + hw, y, hw, h, fh.right, game.lang, false);
+
+    // Center divider between Left and Right AirGesture boxes
+    ctx.save();
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+    ctx.lineWidth = 1.2;
     ctx.beginPath();
-    ctx.moveTo(pts[0][0], pts[0][1]);
-    ctx.lineTo(pts[1][0], pts[1][1]);
-    ctx.lineTo(pts[2][0], pts[2][1]);
-    ctx.closePath();
-    ctx.fill();
-  }
+    ctx.moveTo(x + hw, y + 18);
+    ctx.lineTo(x + hw, y + h);
+    ctx.stroke();
+    ctx.restore();
 
-  // Diagonal zone dividers
-  ctx.strokeStyle = 'rgba(232,211,106,0.35)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(x, y);
-  ctx.lineTo(x + w, y + h);
-  ctx.moveTo(x + w, y);
-  ctx.lineTo(x, y + h);
-  ctx.stroke();
+    drawHandGraphic(ctx, x, y, w, h, fh.left, true);
+    drawHandGraphic(ctx, x, y, w, h, fh.right, false);
 
-  // Center circle ("Do nothing" neutral zone when closed; Fire glow when open)
-  const inCircle = fh.detected && g.zone === 'circle';
-  ctx.fillStyle = inCircle
-    ? (g.fire ? 'rgba(255,106,58,0.52)' : 'rgba(100,150,255,0.42)')
-    : 'rgba(60,100,180,0.22)';
-  ctx.beginPath();
-  ctx.arc(cx, cy, rad, 0, TAU);
-  ctx.fill();
-  ctx.strokeStyle = inCircle && g.fire ? '#ff8a3a' : 'rgba(140,190,255,0.75)';
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
+    // Status headers for Left and Right halves
+    const lg = fh.left.gesture;
+    const rg = fh.right.gesture;
+    const lStatus = !fh.left.detected
+      ? (fh.status === 'nocam'
+        ? t.freeHandPadHintL
+        : fh.right.detected ? t.freeHandOneToRight : t.freeHandLeftShow)
+      : lg.fire
+        ? t.freeHandLeftFire
+        : t.freeHandLeftZones[lg.zone] || t.freeHandIdle;
+    const rStatus = !fh.right.detected
+      ? (fh.status === 'nocam' ? t.freeHandPadHintR : t.freeHandRightShow)
+      : rg.fire
+        ? t.freeHandRightFire
+        : t.freeHandRightZones[rg.zone] || t.freeHandIdle;
 
-  // Subtle zone direction glyphs
-  ctx.font = fontSpec(game.lang, Math.round(clamp(h * 0.1, 9, 13)), 'mono');
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = 'rgba(255,255,255,0.55)';
-  ctx.fillText('▲', cx, y + h * 0.16);
-  ctx.fillText('▼', cx, y + h * 0.84);
-  ctx.fillText('◀', x + w * 0.14, cy);
-  ctx.fillText('▶', x + w * 0.86, cy);
+    ctx.font = fontSpec(game.lang, w < 210 ? 8.5 : 9.5, 'mono');
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
 
-  // Hand skeleton / bbox / tracked center dot
-  if (fh.detected) {
-    if (fh.landmarks) {
-      ctx.strokeStyle = g.fire ? 'rgba(255,140,80,0.9)' : 'rgba(125,255,138,0.85)';
-      ctx.lineWidth = 1.5;
-      for (const [a, b] of MP_HAND_CONNECTIONS) {
-        const la = fh.landmarks[a], lb = fh.landmarks[b];
-        ctx.beginPath();
-        ctx.moveTo(x + la.x * w, y + la.y * h);
-        ctx.lineTo(x + lb.x * w, y + lb.y * h);
-        ctx.stroke();
-      }
-    } else if (fh.bbox) {
-      ctx.strokeStyle = g.fire ? '#ff8a3a' : '#7dff8a';
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(
-        x + fh.bbox.x0 * w,
-        y + fh.bbox.y0 * h,
-        (fh.bbox.x1 - fh.bbox.x0) * w,
-        (fh.bbox.y1 - fh.bbox.y0) * h
-      );
-    }
-    const hx = x + fh.handX * w;
-    const hy = y + fh.handY * h;
-    ctx.fillStyle = g.fire ? '#ff4a3a' : '#7dff8a';
+    ctx.fillStyle = lg.fire ? 'rgba(130,45,190,0.88)' : 'rgba(10,14,12,0.74)';
+    ctx.fillRect(x, y, hw, 18);
+    ctx.fillStyle = lg.fire ? '#f8e6ff' : fh.left.detected ? '#64e8ff' : 'rgba(180,220,240,0.8)';
+    ctx.fillText(lStatus, x + hw / 2, y + 9);
+
+    ctx.fillStyle = rg.fire ? 'rgba(190,45,20,0.86)' : 'rgba(10,14,12,0.74)';
+    ctx.fillRect(x + hw, y, hw, 18);
+    ctx.fillStyle = rg.fire ? '#fff4d0' : fh.right.detected ? '#7dff8a' : '#e8d36a';
+    ctx.fillText(rStatus, x + hw + hw / 2, y + 9);
+
+    // Subtle divider between top status halves
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.arc(hx, hy, 5, 0, TAU);
-    ctx.fill();
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 1.5;
+    ctx.moveTo(x + hw, y);
+    ctx.lineTo(x + hw, y + 18);
     ctx.stroke();
   }
 
-  // Top status pill inside frame
-  const statusText = !fh.detected
-    ? (fh.status === 'nocam' ? t.freeHandPadHint : fh.status === 'loading' ? t.freeHandLoading : t.freeHandShow)
-    : g.fire
-      ? t.freeHandFire
-      : t.freeHandZones[g.zone] || t.freeHandIdle;
-  ctx.fillStyle = g.fire ? 'rgba(190,45,20,0.86)' : 'rgba(10,14,12,0.72)';
-  ctx.fillRect(x, y, w, 18);
-  ctx.font = fontSpec(game.lang, 10, 'mono');
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = g.fire ? '#fff4d0' : fh.detected ? '#7dff8a' : '#e8d36a';
-  ctx.fillText(statusText, cx, y + 9);
-
   ctx.restore();
 
-  // Outer panel border
-  ctx.strokeStyle = g.fire ? '#ff7a3a' : 'rgba(232,211,106,0.55)';
-  ctx.lineWidth = g.fire ? 2 : 1.5;
+  const anyFire = fh.right.gesture.fire || (fh.twoHand && fh.left.gesture.fire);
+  ctx.strokeStyle = fh.right.gesture.fire
+    ? '#ff7a3a'
+    : fh.twoHand && fh.left.gesture.fire
+      ? '#c77dff'
+      : fh.twoHand ? 'rgba(100,232,255,0.6)' : 'rgba(232,211,106,0.55)';
+  ctx.lineWidth = anyFire ? 2 : 1.5;
   ctx.strokeRect(x, y, w, h);
 
-  // Footer mode switch bar (MOVE+AIM vs AIM ONLY, plus [OPEN] pad test button when no camera)
-  const splitPad = fh.backend === 'pad';
-  const modeW = splitPad ? w * 0.62 : w;
-  ctx.fillStyle = 'rgba(18,24,18,0.94)';
-  ctx.fillRect(x, y + h, modeW, footerH);
-  ctx.strokeStyle = 'rgba(232,211,106,0.35)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(x, y + h, modeW, footerH);
-  ctx.font = fontSpec(game.lang, 9.5, 'mono');
+  // Footer controls
+  ctx.font = fontSpec(game.lang, w < 200 ? 8.5 : 9.5, 'mono');
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#e8d36a';
-  const modeTxt = fh.mode === 'smart' ? t.freeHandModeSmart : t.freeHandModeAim;
-  ctx.fillText(modeTxt, x + modeW / 2, y + h + footerH / 2);
 
-  if (splitPad) {
-    const ox = x + modeW;
-    const ow = w - modeW;
-    ctx.fillStyle = fh.padOpen ? 'rgba(210,70,28,0.9)' : 'rgba(28,36,28,0.94)';
-    ctx.fillRect(ox, y + h, ow, footerH);
-    ctx.strokeStyle = fh.padOpen ? '#ffaa6a' : 'rgba(232,211,106,0.45)';
-    ctx.strokeRect(ox, y + h, ow, footerH);
-    ctx.fillStyle = fh.padOpen ? '#ffffff' : '#ffb347';
-    ctx.fillText(t.freeHandTestOpen, ox + ow / 2, y + h + footerH / 2);
+  if (!fh.twoHand) {
+    const splitPad = fh.backend === 'pad';
+    const modeW = splitPad ? w * 0.62 : w;
+    ctx.fillStyle = 'rgba(18,24,18,0.94)';
+    ctx.fillRect(x, y + h, modeW, footerH);
+    ctx.strokeStyle = 'rgba(232,211,106,0.35)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y + h, modeW, footerH);
+    ctx.fillStyle = '#e8d36a';
+    ctx.fillText(fh.mode === 'smart' ? t.freeHandModeSmart : t.freeHandModeAim, x + modeW / 2, y + h + footerH / 2);
+
+    if (splitPad) {
+      const ox = x + modeW;
+      const ow = w - modeW;
+      ctx.fillStyle = fh.right.padOpen ? 'rgba(210,70,28,0.9)' : 'rgba(28,36,28,0.94)';
+      ctx.fillRect(ox, y + h, ow, footerH);
+      ctx.strokeStyle = fh.right.padOpen ? '#ffaa6a' : 'rgba(232,211,106,0.45)';
+      ctx.strokeRect(ox, y + h, ow, footerH);
+      ctx.fillStyle = fh.right.padOpen ? '#ffffff' : '#ffb347';
+      ctx.fillText(t.freeHandTestOpen, ox + ow / 2, y + h + footerH / 2);
+    }
+  } else if (fh.backend === 'pad') {
+    const w1 = w * 0.44;
+    const w2 = w * 0.28;
+    const w3 = w - w1 - w2;
+    ctx.fillStyle = 'rgba(18,24,22,0.94)';
+    ctx.fillRect(x, y + h, w1, footerH);
+    ctx.strokeStyle = 'rgba(100,232,255,0.4)';
+    ctx.strokeRect(x, y + h, w1, footerH);
+    ctx.fillStyle = '#64e8ff';
+    ctx.fillText(t.leftWeaponShort[fh.leftWeapon], x + w1 / 2, y + h + footerH / 2);
+
+    ctx.fillStyle = fh.left.padOpen ? 'rgba(130,45,190,0.9)' : 'rgba(24,28,36,0.94)';
+    ctx.fillRect(x + w1, y + h, w2, footerH);
+    ctx.strokeStyle = fh.left.padOpen ? '#e0b0ff' : 'rgba(130,220,255,0.4)';
+    ctx.strokeRect(x + w1, y + h, w2, footerH);
+    ctx.fillStyle = fh.left.padOpen ? '#fff' : '#c77dff';
+    ctx.fillText(t.freeHandTestOpenL, x + w1 + w2 / 2, y + h + footerH / 2);
+
+    ctx.fillStyle = fh.right.padOpen ? 'rgba(210,70,28,0.9)' : 'rgba(28,36,28,0.94)';
+    ctx.fillRect(x + w1 + w2, y + h, w3, footerH);
+    ctx.strokeStyle = fh.right.padOpen ? '#ffaa6a' : 'rgba(232,211,106,0.45)';
+    ctx.strokeRect(x + w1 + w2, y + h, w3, footerH);
+    ctx.fillStyle = fh.right.padOpen ? '#fff' : '#ffb347';
+    ctx.fillText(t.freeHandTestOpenR, x + w1 + w2 + w3 / 2, y + h + footerH / 2);
+  } else {
+    const w1 = w * 0.56;
+    const w2 = w - w1;
+    ctx.fillStyle = 'rgba(18,24,22,0.94)';
+    ctx.fillRect(x, y + h, w1, footerH);
+    ctx.strokeStyle = 'rgba(100,232,255,0.4)';
+    ctx.strokeRect(x, y + h, w1, footerH);
+    ctx.fillStyle = '#64e8ff';
+    ctx.fillText(t.leftWeaponShort[fh.leftWeapon], x + w1 / 2, y + h + footerH / 2);
+
+    ctx.fillStyle = 'rgba(22,36,26,0.94)';
+    ctx.fillRect(x + w1, y + h, w2, footerH);
+    ctx.strokeStyle = 'rgba(125,255,138,0.45)';
+    ctx.strokeRect(x + w1, y + h, w2, footerH);
+    ctx.fillStyle = '#7dff8a';
+    ctx.fillText(t.freeHand2HTagOn, x + w1 + w2 / 2, y + h + footerH / 2);
   }
 
   ctx.restore();

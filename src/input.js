@@ -48,7 +48,9 @@ export class Input {
       this._mouseTouchActive = false;
       this.touch.resetAll();
       const ctx = readCtx();
-      if (ctx.freeHand && ctx.freeHand.padPointerId !== null) ctx.freeHand.clearPadInput();
+      if (ctx.freeHand && ctx.freeHand.hasAnyPadPointer && ctx.freeHand.hasAnyPadPointer()) {
+        ctx.freeHand.clearPadInput('all');
+      }
     };
     window.addEventListener('blur', resetAll);
     document.addEventListener('visibilitychange', () => {
@@ -60,10 +62,17 @@ export class Input {
       const [x, y] = canvasPoint(e.clientX, e.clientY);
       const ctx = readCtx();
       const fh = ctx.freeHand;
-      if (fh && fh.enabled && fh.backend === 'pad' && fh.padPointerId === 'mouse') {
-        const r = getFreeHandRect(getTouchLayout(ctx.w, ctx.h, ctx.insets));
-        fh.setPadInput((x - r.x) / r.w, (y - r.y) / r.h, (e.buttons & 2) !== 0 || e.shiftKey || fh.padOpen);
-        return;
+      if (fh && fh.enabled && fh.backend === 'pad') {
+        if (fh.left.padPointerId === 'mouse') {
+          const r = getFreeHandRect(getTouchLayout(ctx.w, ctx.h, ctx.insets), fh.twoHand);
+          fh.setPadInput((x - r.x) / r.w, (y - r.y) / r.h, (e.buttons & 2) !== 0 || e.shiftKey || fh.left.padOpen, 'left');
+          return;
+        }
+        if (fh.right.padPointerId === 'mouse') {
+          const r = getFreeHandRect(getTouchLayout(ctx.w, ctx.h, ctx.insets), fh.twoHand);
+          fh.setPadInput((x - r.x) / r.w, (y - r.y) / r.h, (e.buttons & 2) !== 0 || e.shiftKey || fh.right.padOpen, 'right');
+          return;
+        }
       }
       if (this._mouseTouchActive) {
         this.touch.onMove('mouse', x, y, getTouchLayout(ctx.w, ctx.h, ctx.insets));
@@ -73,6 +82,54 @@ export class Input {
       this.mouseY = y;
       this.usingGamepad = false;
     });
+
+    const handleFhAction = (fhHit, id, x, y, openFlag, ctx, layout) => {
+      const fh = ctx.freeHand;
+      if (fhHit === 'mode') {
+        if (ctx.toggleFreeHandMode) ctx.toggleFreeHandMode();
+        else fh.toggleMode();
+        return true;
+      }
+      if (fhHit === 'twoHand') {
+        if (ctx.toggleTwoHand) ctx.toggleTwoHand();
+        else fh.toggleTwoHand();
+        return true;
+      }
+      if (fhHit === 'leftWeapon') {
+        if (ctx.cycleLeftWeapon) ctx.cycleLeftWeapon();
+        else fh.cycleLeftWeapon();
+        return true;
+      }
+      if (fhHit === 'padOpen' || fhHit === 'padOpenR') {
+        fh.right.padPointerId = id;
+        fh.right.padOpen = true;
+        fh.setPadInput(fh.right.handX, fh.right.handY, true, 'right');
+        return true;
+      }
+      if (fhHit === 'padOpenL') {
+        fh.left.padPointerId = id;
+        fh.left.padOpen = true;
+        fh.setPadInput(fh.left.handX, fh.left.handY, true, 'left');
+        return true;
+      }
+      if (fhHit === 'pad' || fhHit === 'padR') {
+        if (fh.backend === 'pad') {
+          const r = getFreeHandRect(layout, fh.twoHand);
+          fh.right.padPointerId = id;
+          fh.setPadInput((x - r.x) / r.w, (y - r.y) / r.h, openFlag || fh.right.padOpen, 'right');
+        }
+        return true;
+      }
+      if (fhHit === 'padL') {
+        if (fh.backend === 'pad') {
+          const r = getFreeHandRect(layout, fh.twoHand);
+          fh.left.padPointerId = id;
+          fh.setPadInput((x - r.x) / r.w, (y - r.y) / r.h, openFlag || fh.left.padOpen, 'left');
+        }
+        return true;
+      }
+      return false;
+    };
 
     canvas.addEventListener('mousedown', (e) => {
       e.preventDefault();
@@ -88,22 +145,9 @@ export class Input {
       if (ctx.state === 'playing' && fh && fh.enabled) {
         const layout = getTouchLayout(ctx.w, ctx.h, ctx.insets);
         const fhHit = hitFreeHandPanel(x, y, layout, fh);
-        if (fhHit === 'mode') {
-          if (e.button === 0) fh.toggleMode();
-          return;
-        }
-        if (fhHit === 'padOpen') {
-          fh.padPointerId = 'mouseOpen';
-          fh.padOpen = true;
-          fh.setPadInput(fh.handX, fh.handY, true);
-          return;
-        }
-        if (fhHit === 'pad') {
-          if (fh.backend === 'pad') {
-            const r = getFreeHandRect(layout);
-            fh.padPointerId = 'mouse';
-            fh.setPadInput((x - r.x) / r.w, (y - r.y) / r.h, e.button === 2 || e.shiftKey || fh.padOpen);
-          }
+        if (fhHit) {
+          if ((fhHit === 'mode' || fhHit === 'twoHand' || fhHit === 'leftWeapon') && e.button !== 0) return;
+          handleFhAction(fhHit, 'mouse', x, y, e.button === 2 || e.shiftKey, ctx, layout);
           return;
         }
       }
@@ -114,6 +158,7 @@ export class Input {
           const nearVirtual =
             this.touch._inPause(x, y, layout) ||
             this.touch._inHandBtn(x, y, layout) ||
+            this.touch._inTwoHandBtn(x, y, layout) ||
             this.touch._hitButton(x, y, layout) !== null ||
             Math.hypot(x - layout.leftHome.x, y - layout.leftHome.y) <= layout.jr * 1.08 ||
             Math.hypot(x - layout.rightHome.x, y - layout.rightHome.y) <= layout.jr * 1.08;
@@ -129,16 +174,34 @@ export class Input {
       this.mouseClicked[e.button] = true;
     });
 
+    const releasePadPointer = (fh, id) => {
+      let handled = false;
+      if (fh && fh.left.padPointerId === id) {
+        if (fh.left.padOpen) {
+          fh.left.padPointerId = null;
+          fh.left.padOpen = false;
+          if (fh.left.detected) fh.setPadInput(fh.left.handX, fh.left.handY, false, 'left');
+        } else {
+          fh.clearPadInput('left');
+        }
+        handled = true;
+      }
+      if (fh && fh.right.padPointerId === id) {
+        if (fh.right.padOpen) {
+          fh.right.padPointerId = null;
+          fh.right.padOpen = false;
+          if (fh.right.detected) fh.setPadInput(fh.right.handX, fh.right.handY, false, 'right');
+        } else {
+          fh.clearPadInput('right');
+        }
+        handled = true;
+      }
+      return handled;
+    };
+
     window.addEventListener('mouseup', (e) => {
       const ctx = readCtx();
-      const fh = ctx.freeHand;
-      if (fh && fh.padPointerId === 'mouseOpen') {
-        fh.padPointerId = null;
-        fh.padOpen = false;
-        if (fh.detected) fh.setPadInput(fh.handX, fh.handY, false);
-      } else if (fh && fh.padPointerId === 'mouse') {
-        fh.clearPadInput();
-      }
+      releasePadPointer(ctx.freeHand, 'mouse');
       if (e.button === 0 && this._mouseTouchActive) {
         this.touch.onEnd('mouse');
         this._mouseTouchActive = false;
@@ -160,24 +223,7 @@ export class Input {
         const [x, y] = canvasPoint(t.clientX, t.clientY);
         if (ctx.state === 'playing' && fh && fh.enabled) {
           const fhHit = hitFreeHandPanel(x, y, layout, fh);
-          if (fhHit === 'mode') {
-            fh.toggleMode();
-            continue;
-          }
-          if (fhHit === 'padOpen') {
-            fh.padPointerId = t.identifier;
-            fh.padOpen = true;
-            fh.setPadInput(fh.handX, fh.handY, true);
-            continue;
-          }
-          if (fhHit === 'pad') {
-            if (fh.backend === 'pad') {
-              const r = getFreeHandRect(layout);
-              fh.padPointerId = t.identifier;
-              fh.setPadInput((x - r.x) / r.w, (y - r.y) / r.h, fh.padOpen);
-            }
-            continue;
-          }
+          if (fhHit && handleFhAction(fhHit, t.identifier, x, y, false, ctx, layout)) continue;
         }
         this.touch.onStart(t.identifier, x, y, ctx.state, layout);
       }
@@ -191,10 +237,21 @@ export class Input {
       const fh = ctx.freeHand;
       for (const t of e.changedTouches) {
         const [x, y] = canvasPoint(t.clientX, t.clientY);
-        if (fh && fh.enabled && fh.backend === 'pad' && fh.padPointerId === t.identifier) {
-          const r = getFreeHandRect(layout);
-          fh.setPadInput((x - r.x) / r.w, (y - r.y) / r.h, fh.padOpen);
-          continue;
+        if (fh && fh.enabled && fh.backend === 'pad') {
+          if (fh.left.padPointerId === t.identifier) {
+            if (!fh.left.padOpen) {
+              const r = getFreeHandRect(layout, fh.twoHand);
+              fh.setPadInput((x - r.x) / r.w, (y - r.y) / r.h, false, 'left');
+            }
+            continue;
+          }
+          if (fh.right.padPointerId === t.identifier) {
+            if (!fh.right.padOpen) {
+              const r = getFreeHandRect(layout, fh.twoHand);
+              fh.setPadInput((x - r.x) / r.w, (y - r.y) / r.h, false, 'right');
+            }
+            continue;
+          }
         }
         this.touch.onMove(t.identifier, x, y, layout);
       }
@@ -206,16 +263,7 @@ export class Input {
       const ctx = readCtx();
       const fh = ctx.freeHand;
       for (const t of e.changedTouches) {
-        if (fh && fh.padPointerId === t.identifier) {
-          if (fh.padOpen) {
-            fh.padPointerId = null;
-            fh.padOpen = false;
-            if (fh.detected) fh.setPadInput(fh.handX, fh.handY, false);
-          } else {
-            fh.clearPadInput();
-          }
-          continue;
-        }
+        if (releasePadPointer(fh, t.identifier)) continue;
         this.touch.onEnd(t.identifier);
       }
     };
