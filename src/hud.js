@@ -6,9 +6,11 @@ import { Helicopter } from './enemies.js';
 import { PICKUPS } from './pickups.js';
 import { getTouchLayout, drawTouchControls, drawPauseButton } from './touch.js';
 import { audio } from './audio.js';
+import { FONT_EN, MONO_EN, fontSpec, tr } from './i18n.js';
 
-const FONT = '"Russo One", "Arial Black", Impact, sans-serif';
-const MONO = '"Share Tech Mono", ui-monospace, Menlo, monospace';
+const FONT = FONT_EN;
+const MONO = MONO_EN;
+let _lang = 'en';
 
 export function makeVignette(w, h) {
   const c = makeCanvas(w, h);
@@ -132,7 +134,11 @@ function bar(ctx, x, y, w, h, frac, color, back = 'rgba(255,255,255,0.08)', segm
 }
 
 function text(ctx, s, x, y, size, color, align = 'left', font = FONT, stroke = true) {
-  ctx.font = `${size}px ${font}`;
+  if (_lang === 'vi' && (font === FONT || font === MONO)) {
+    ctx.font = fontSpec('vi', size, font === MONO ? 'mono' : 'ui');
+  } else {
+    ctx.font = `${size}px ${font}`;
+  }
   ctx.textAlign = align;
   ctx.textBaseline = 'middle';
   if (stroke) {
@@ -145,19 +151,20 @@ function text(ctx, s, x, y, size, color, align = 'left', font = FONT, stroke = t
 }
 
 function drawStatusPanel(game, ctx, p, px, py, pw, ph, s) {
+  const t = tr(game.lang);
   panel(ctx, px, py, pw, ph);
   const hpf = p.hp / p.maxHp;
   const hpCol = hpf > 0.5 ? '#7dd35a' : hpf > 0.25 ? '#f1c40f' : '#ff4a3a';
   const pad = Math.round(10 * s);
-  const labelW = Math.round(44 * s);
-  text(ctx, 'ARMOUR', px + pad, py + 14 * s, 11 * s, '#e8d36a');
+  const labelW = Math.round(48 * s);
+  text(ctx, t.armour, px + pad, py + 14 * s, 11 * s, '#e8d36a');
   text(ctx, `${Math.ceil(p.hp)}/${p.maxHp}`, px + pw - pad, py + 14 * s, 11 * s, '#fff', 'right', MONO);
   bar(ctx, px + pad, py + 23 * s, pw - pad * 2, 12 * s, hpf, hpCol, 'rgba(255,255,255,0.08)', Math.min(30, Math.round(p.maxHp / 25)));
-  text(ctx, 'BOOST', px + pad, py + 45 * s, 10 * s, '#9fe8ff');
+  text(ctx, t.boost, px + pad, py + 45 * s, 10 * s, '#9fe8ff');
   bar(ctx, px + pad + labelW, py + 41 * s, pw - pad * 2 - labelW, 8 * s, p.boostEnergy, p.boosting ? '#ffffff' : '#4fc3f7');
-  text(ctx, 'COAX', px + pad, py + 59 * s, 10 * s, p.overheated ? '#ff4a3a' : '#ffb347');
+  text(ctx, t.coax, px + pad, py + 59 * s, 10 * s, p.overheated ? '#ff4a3a' : '#ffb347');
   bar(ctx, px + pad + labelW, py + 55 * s, pw - pad * 2 - labelW, 8 * s, p.mgHeat, p.overheated ? (Math.sin(game.time * 20) > 0 ? '#ff4a3a' : '#7a1a10') : '#ff8a3a');
-  text(ctx, 'MSL', px + pad, py + 77 * s, 10 * s, '#e67e22');
+  text(ctx, t.msl, px + pad, py + 77 * s, 10 * s, '#e67e22');
   const maxFit = Math.max(4, Math.floor((pw - pad * 2 - labelW - 20 * s) / (9.5 * s)));
   const mcount = Math.min(game.missiles, maxFit);
   for (let i = 0; i < mcount; i++) {
@@ -168,21 +175,23 @@ function drawStatusPanel(game, ctx, p, px, py, pw, ph, s) {
     ctx.fillRect(mx, py + 71 * s, 5.5 * s, 3 * s);
   }
   if (game.missiles > maxFit) text(ctx, `+${game.missiles - maxFit}`, px + pad + labelW + maxFit * 9.5 * s, py + 77 * s, 10 * s, '#e67e22');
-  if (game.missiles === 0) text(ctx, 'EMPTY', px + pad + labelW, py + 77 * s, 10 * s, 'rgba(255,255,255,0.35)');
+  if (game.missiles === 0) text(ctx, t.empty, px + pad + labelW, py + 77 * s, 10 * s, 'rgba(255,255,255,0.35)');
 
   let ey = py + ph + 8 * s;
-  const effect = (label, t, max, col) => {
+  const effect = (label, timeLeft, max, col) => {
     const ew = pw * 0.85;
     panel(ctx, px, ey, ew, 20 * s, 0.45);
     text(ctx, label, px + 8 * s, ey + 10 * s, 10 * s, col);
-    bar(ctx, px + 84 * s, ey + 6 * s, ew - 92 * s, 7 * s, t / max, col);
+    bar(ctx, px + 84 * s, ey + 6 * s, ew - 92 * s, 7 * s, timeLeft / max, col);
     ey += 25 * s;
   };
-  if (game.overdrive > 0) effect('OVERDRIVE', game.overdrive, 10, '#c77dff');
-  if (p.shield > 0) effect('SHIELD', p.shield, 8, '#7ad7ff');
+  if (game.overdrive > 0) effect(t.overdrive, game.overdrive, 10, '#c77dff');
+  if (p.shield > 0) effect(t.shield, p.shield, 8, '#7ad7ff');
 }
 
 export function drawHUD(game, ctx) {
+  _lang = game.lang || 'en';
+  const t = tr(_lang);
   const p = game.player;
   if (!p) return;
   const { w, h } = game;
@@ -199,15 +208,15 @@ export function drawHUD(game, ctx) {
   panel(ctx, px, py, pw, ph);
   const hpf = p.hp / p.maxHp;
   const hpCol = hpf > 0.5 ? '#7dd35a' : hpf > 0.25 ? '#f1c40f' : '#ff4a3a';
-  text(ctx, 'ARMOUR', px + 12 * s, py + 16 * s, 12 * s, '#e8d36a');
+  text(ctx, t.armour, px + 12 * s, py + 16 * s, 12 * s, '#e8d36a');
   text(ctx, `${Math.ceil(p.hp)}/${p.maxHp}`, px + pw - 12 * s, py + 16 * s, 12 * s, '#fff', 'right', MONO);
   bar(ctx, px + 12 * s, py + 26 * s, pw - 24 * s, 14 * s, hpf, hpCol, 'rgba(255,255,255,0.08)', Math.min(30, Math.round(p.maxHp / 25)));
-  text(ctx, 'BOOST', px + 12 * s, py + 52 * s, 11 * s, '#9fe8ff');
+  text(ctx, t.boost, px + 12 * s, py + 52 * s, 11 * s, '#9fe8ff');
   bar(ctx, px + 60 * s, py + 47 * s, pw - 72 * s, 9 * s, p.boostEnergy, p.boosting ? '#ffffff' : '#4fc3f7');
-  text(ctx, 'COAX', px + 12 * s, py + 68 * s, 11 * s, p.overheated ? '#ff4a3a' : '#ffb347');
+  text(ctx, t.coax, px + 12 * s, py + 68 * s, 11 * s, p.overheated ? '#ff4a3a' : '#ffb347');
   bar(ctx, px + 60 * s, py + 63 * s, pw - 72 * s, 9 * s, p.mgHeat, p.overheated ? (Math.sin(game.time * 20) > 0 ? '#ff4a3a' : '#7a1a10') : '#ff8a3a');
   // Missiles
-  text(ctx, 'MSL', px + 12 * s, py + 88 * s, 11 * s, '#e67e22');
+  text(ctx, t.msl, px + 12 * s, py + 88 * s, 11 * s, '#e67e22');
   const mcount = Math.min(game.missiles, 16);
   for (let i = 0; i < mcount; i++) {
     const mx = px + 60 * s + i * 11 * s;
@@ -217,41 +226,41 @@ export function drawHUD(game, ctx) {
     ctx.fillRect(mx, py + 82 * s, 6 * s, 3 * s);
   }
   if (game.missiles > 16) text(ctx, `+${game.missiles - 16}`, px + 60 * s + 16 * 11 * s, py + 88 * s, 11 * s, '#e67e22');
-  if (game.missiles === 0) text(ctx, 'EMPTY', px + 60 * s, py + 88 * s, 11 * s, 'rgba(255,255,255,0.35)');
+  if (game.missiles === 0) text(ctx, t.empty, px + 60 * s, py + 88 * s, 11 * s, 'rgba(255,255,255,0.35)');
   // Timed effects
   let ey = py + ph + 10 * s;
-  const effect = (label, t, max, col) => {
+  const effect = (label, timeLeft, max, col) => {
     panel(ctx, px, ey, pw * 0.75, 22 * s, 0.45);
     text(ctx, label, px + 10 * s, ey + 11 * s, 11 * s, col);
-    bar(ctx, px + 100 * s, ey + 7 * s, pw * 0.75 - 110 * s, 8 * s, t / max, col);
+    bar(ctx, px + 100 * s, ey + 7 * s, pw * 0.75 - 110 * s, 8 * s, timeLeft / max, col);
     ey += 28 * s;
   };
-  if (game.overdrive > 0) effect('OVERDRIVE', game.overdrive, 10, '#c77dff');
-  if (p.shield > 0) effect('SHIELD', p.shield, 8, '#7ad7ff');
+  if (game.overdrive > 0) effect(t.overdrive, game.overdrive, 10, '#c77dff');
+  if (p.shield > 0) effect(t.shield, p.shield, 8, '#7ad7ff');
 
   // --- Score (top-right) ---
   const sx = w - 16;
   text(ctx, game.score.toLocaleString(), sx, 34 * s, 34 * s, '#ffffff', 'right');
-  text(ctx, `BEST ${Math.max(game.best, game.score).toLocaleString()}`, sx, 62 * s, 12 * s, 'rgba(255,255,255,0.6)', 'right', MONO);
+  text(ctx, t.bestHud(Math.max(game.best, game.score).toLocaleString()), sx, 62 * s, 12 * s, 'rgba(255,255,255,0.6)', 'right', MONO);
   const mult = game.mult();
   if (game.combo > 0) {
     const pop = 1 + Math.max(0, game.comboTimer - 2.7) * 1.5;
     text(ctx, `x${mult}`, sx, 92 * s, 28 * s * pop, mult >= 4 ? '#ff7a3a' : '#ffd34d', 'right');
-    text(ctx, `${game.combo} COMBO`, sx - 60 * s, 92 * s, 12 * s, 'rgba(255,255,255,0.75)', 'right');
+    text(ctx, t.combo(game.combo), sx - 60 * s, 92 * s, 12 * s, 'rgba(255,255,255,0.75)', 'right');
     bar(ctx, sx - 140 * s, 108 * s, 140 * s, 4 * s, game.comboTimer / 3, '#ffd34d');
   }
 
   // --- Wave (top-centre) ---
   if (game.wave > 0) {
     const remaining = game.enemyTanks.length + game.air.filter((a) => a.alive).length + game.spawnQueue.length;
-    text(ctx, `WAVE ${game.wave}`, w / 2, 24 * s, 20 * s, '#e8d36a', 'center');
-    if (game.waveState === 'active') text(ctx, `${remaining} HOSTILES`, w / 2, 46 * s, 11 * s, 'rgba(255,255,255,0.7)', 'center', MONO);
+    text(ctx, t.wave(game.wave), w / 2, 24 * s, 20 * s, '#e8d36a', 'center');
+    if (game.waveState === 'active') text(ctx, t.hostiles(remaining), w / 2, 46 * s, 11 * s, 'rgba(255,255,255,0.7)', 'center', MONO);
   }
   // Boss bar
   if (game.boss && game.boss.alive) {
     const bw = Math.min(600, w * 0.5), bx = w / 2 - bw / 2, by = 64 * s;
     panel(ctx, bx - 10, by - 6, bw + 20, 34 * s, 0.6);
-    text(ctx, 'BEHEMOTH', w / 2, by + 6 * s, 12 * s, '#ff4a3a', 'center');
+    text(ctx, t.behemoth, w / 2, by + 6 * s, 12 * s, '#ff4a3a', 'center');
     bar(ctx, bx, by + 14 * s, bw, 10 * s, game.boss.hp / game.boss.maxHp, '#ff3b30', 'rgba(255,255,255,0.08)', 10);
   }
 
@@ -265,15 +274,14 @@ export function drawHUD(game, ctx) {
   if (game.time < 12 && game.state === 'playing') {
     const a = clamp((12 - game.time) / 2, 0, 1);
     ctx.globalAlpha = a;
-    const lines = game.input.usingGamepad
-      ? ['L-STICK drive · R-STICK aim', 'RT cannon · LT/RB machine gun', 'A boost · B missiles']
-      : [game.controlMode === 'arcade' ? 'WASD drive (arcade)' : 'W/S throttle · A/D steer (tank)', 'MOUSE aim · LMB cannon · RMB machine gun', 'SHIFT boost · SPACE missiles · ESC pause'];
+    const lines = game.input.usingGamepad ? t.hintsGamepad : t.hintsDesktop(game.controlMode === 'arcade');
     lines.forEach((l, i) => text(ctx, l, 20, h - 70 + i * 20, 13, 'rgba(255,255,255,0.85)', 'left', MONO));
     ctx.globalAlpha = 1;
   }
 }
 
 function drawTouchHUD(game, ctx, p) {
+  const t = tr(game.lang);
   const { w } = game;
   const layout = getTouchLayout(w, game.h, game.insets);
   const s = layout.s;
@@ -292,13 +300,13 @@ function drawTouchHUD(game, ctx, p) {
   let sy = layout.narrow ? mm.y + mm.size + 18 : layout.padT + 14;
   const scoreSize = layout.narrow ? 22 : Math.round(26 * s);
   text(ctx, game.score.toLocaleString(), sx, sy, scoreSize, '#ffffff', 'right');
-  text(ctx, `BEST ${Math.max(game.best, game.score).toLocaleString()}`, sx, sy + scoreSize * 0.85, Math.round(scoreSize * 0.44), 'rgba(255,255,255,0.6)', 'right', MONO);
+  text(ctx, t.bestHud(Math.max(game.best, game.score).toLocaleString()), sx, sy + scoreSize * 0.85, Math.round(scoreSize * 0.44), 'rgba(255,255,255,0.6)', 'right', MONO);
   const mult = game.mult();
   if (game.combo > 0) {
     const cy = sy + scoreSize * 1.7;
     const pop = 1 + Math.max(0, game.comboTimer - 2.7) * 1.5;
     text(ctx, `x${mult}`, sx, cy, Math.round(22 * s * pop), mult >= 4 ? '#ff7a3a' : '#ffd34d', 'right');
-    text(ctx, `${game.combo} COMBO`, sx - 44 * s, cy, Math.round(10 * s), 'rgba(255,255,255,0.75)', 'right');
+    text(ctx, t.combo(game.combo), sx - 44 * s, cy, Math.round(10 * s), 'rgba(255,255,255,0.75)', 'right');
     bar(ctx, sx - 105 * s, cy + 12 * s, 105 * s, 3.5, game.comboTimer / 3, '#ffd34d');
   }
 
@@ -306,8 +314,8 @@ function drawTouchHUD(game, ctx, p) {
   let wy = layout.narrow ? layout.pause.y + layout.pause.h + 14 : layout.padT + 12;
   if (game.wave > 0) {
     const remaining = game.enemyTanks.length + game.air.filter((a) => a.alive).length + game.spawnQueue.length;
-    text(ctx, `WAVE ${game.wave}`, w / 2, wy, Math.round(17 * s), '#e8d36a', 'center');
-    if (game.waveState === 'active') text(ctx, `${remaining} HOSTILES`, w / 2, wy + 17 * s, Math.round(10 * s), 'rgba(255,255,255,0.7)', 'center', MONO);
+    text(ctx, t.wave(game.wave), w / 2, wy, Math.round(17 * s), '#e8d36a', 'center');
+    if (game.waveState === 'active') text(ctx, t.hostiles(remaining), w / 2, wy + 17 * s, Math.round(10 * s), 'rgba(255,255,255,0.7)', 'center', MONO);
     wy += 32 * s;
   }
   if (game.boss && game.boss.alive) {
@@ -315,7 +323,7 @@ function drawTouchHUD(game, ctx, p) {
     const bx = w / 2 - bw / 2;
     const by = wy;
     panel(ctx, bx - 8, by - 4, bw + 16, 28 * s, 0.6);
-    text(ctx, 'BEHEMOTH', w / 2, by + 5 * s, Math.round(10 * s), '#ff4a3a', 'center');
+    text(ctx, t.behemoth, w / 2, by + 5 * s, Math.round(10 * s), '#ff4a3a', 'center');
     bar(ctx, bx, by + 13 * s, bw, 8 * s, game.boss.hp / game.boss.maxHp, '#ff3b30', 'rgba(255,255,255,0.08)', 10);
   }
 
@@ -465,7 +473,10 @@ function drawAnnouncements(game, ctx, s) {
     const outA = clamp(a.life / 0.4, 0, 1);
     const scale = a.small ? 1 : lerp(1.8, 1, 1 - (1 - inT) ** 3);
     ctx.globalAlpha = outA * inT;
-    const size = (a.small ? 30 : 54) * s * scale;
+    let size = (a.small ? 30 : 54) * s * scale;
+    ctx.font = fontSpec(_lang, size, 'ui');
+    const aw = ctx.measureText(a.text).width;
+    if (aw > w * 0.88) size *= (w * 0.88) / aw;
     // Slanted backing strip
     if (!a.small) {
       ctx.fillStyle = 'rgba(0,0,0,0.35)';
@@ -479,7 +490,13 @@ function drawAnnouncements(game, ctx, s) {
       ctx.fill();
     }
     text(ctx, a.text, w / 2, y, size, a.color, 'center');
-    if (a.sub) text(ctx, a.sub, w / 2, y + size * 0.75, 16 * s, 'rgba(255,255,255,0.9)', 'center', MONO);
+    if (a.sub) {
+      let subSz = 16 * s;
+      ctx.font = fontSpec(_lang, subSz, 'mono');
+      const sw = ctx.measureText(a.sub).width;
+      if (sw > w * 0.88) subSz *= (w * 0.88) / sw;
+      text(ctx, a.sub, w / 2, y + size * 0.75, subSz, 'rgba(255,255,255,0.9)', 'center', MONO);
+    }
     y += size * (a.sub ? 1.9 : 1.3);
   }
   ctx.globalAlpha = 1;
@@ -487,8 +504,8 @@ function drawAnnouncements(game, ctx, s) {
 
 // --- Screens --------------------------------------------------------------------------------
 
-function titleText(ctx, s, x, y, size) {
-  ctx.font = `${size}px ${FONT}`;
+function titleText(ctx, s, x, y, size, forceEn = false) {
+  ctx.font = forceEn ? `${size}px ${FONT_EN}` : fontSpec(_lang, size, 'title');
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.lineWidth = size / 6;
@@ -501,6 +518,12 @@ function titleText(ctx, s, x, y, size) {
   grd.addColorStop(1, '#ffdd88');
   ctx.fillStyle = grd;
   ctx.fillText(s, x, y);
+}
+
+function fitTitleSize(ctx, str, size, maxW) {
+  ctx.font = fontSpec(_lang, size, 'title');
+  const tw = ctx.measureText(str).width;
+  return tw > maxW ? size * (maxW / tw) : size;
 }
 
 function wrapText(ctx, str, maxW) {
@@ -520,9 +543,25 @@ function wrapText(ctx, str, maxW) {
   return lines;
 }
 
+export function titleLangToggleRect(game) {
+  const ins = game.insets || { top: 0, left: 0 };
+  const bw = game.w < 500 ? 104 : 124;
+  return {
+    x: Math.max(14, ins.left + 8),
+    y: Math.max(14, ins.top + 8),
+    w: bw,
+    h: 30,
+  };
+}
+
+export function titleLangToggleHit(game, mx, my) {
+  const r = titleLangToggleRect(game);
+  return mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h;
+}
+
 export function titleTouchToggleRect(game) {
   const ins = game.insets || { top: 0, right: 0 };
-  const bw = game.w < 500 ? 154 : 180;
+  const bw = game.w < 500 ? 156 : 194;
   const bh = 30;
   return {
     x: game.w - bw - Math.max(14, ins.right + 8),
@@ -538,31 +577,53 @@ export function titleTouchToggleHit(game, mx, my) {
 }
 
 export function drawTitle(game, ctx) {
+  _lang = game.lang || 'en';
+  const trn = tr(_lang);
   const { w, h } = game;
   const s = clamp(Math.min(w / 1300, h / 800), 0.52, 1.4);
   ctx.fillStyle = 'rgba(5,8,6,0.35)';
   ctx.fillRect(0, 0, w, h);
 
+  // Language toggle pill (top-left)
+  const lr = titleLangToggleRect(game);
+  panel(ctx, lr.x, lr.y, lr.w, lr.h, 0.58);
+  const halfW = lr.w / 2;
+  const activeX = _lang === 'en' ? lr.x + 2 : lr.x + halfW + 1;
+  ctx.fillStyle = 'rgba(232,211,106,0.22)';
+  ctx.fillRect(activeX, lr.y + 2, halfW - 3, lr.h - 4);
+  ctx.strokeStyle = 'rgba(232,211,106,0.65)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(activeX, lr.y + 2, halfW - 3, lr.h - 4);
+  const pillFontSz = w < 500 ? 10 : 11;
+  ctx.font = `${pillFontSz}px ${MONO_EN}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = _lang === 'en' ? '#e8d36a' : 'rgba(255,255,255,0.55)';
+  ctx.fillText('EN', lr.x + halfW * 0.5, lr.y + lr.h / 2);
+  ctx.font = fontSpec('vi', pillFontSz, 'ui');
+  ctx.fillStyle = _lang === 'vi' ? '#e8d36a' : 'rgba(255,255,255,0.55)';
+  ctx.fillText('VIỆT', lr.x + halfW * 1.5, lr.y + lr.h / 2);
+
   // Small touch-UI mode pill in top-right corner
-  const tr = titleTouchToggleRect(game);
-  panel(ctx, tr.x, tr.y, tr.w, tr.h, 0.55);
-  text(ctx, `JOYSTICKS: ${game.touchUiMode.toUpperCase()}`, tr.x + tr.w / 2, tr.y + tr.h / 2, game.w < 500 ? 10 : 11, '#e8d36a', 'center', MONO, false);
+  const trRect = titleTouchToggleRect(game);
+  panel(ctx, trRect.x, trRect.y, trRect.w, trRect.h, 0.55);
+  text(ctx, trn.joyPill(trn.touchModes[game.touchUiMode]), trRect.x + trRect.w / 2, trRect.y + trRect.h / 2, w < 500 ? 10 : 11, '#e8d36a', 'center', MONO, false);
 
   const t = game.titleT;
   const bob = Math.sin(t * 1.5) * 4;
 
   // Scale main title to always fit screen width
   let titleSize = 110 * s;
-  ctx.font = `${titleSize}px ${FONT}`;
+  ctx.font = `${titleSize}px ${FONT_EN}`;
   const titleW = ctx.measureText('STEEL STORM').width;
   if (titleW > w * 0.88) titleSize *= (w * 0.88) / titleW;
 
   const titleY = h * (h < 500 ? 0.25 : 0.28) + bob;
-  titleText(ctx, 'STEEL STORM', w / 2, titleY, titleSize);
+  titleText(ctx, 'STEEL STORM', w / 2, titleY, titleSize, true);
 
-  const sub = w < 480 ? 'TRACKED ARMOUR  ·  TOTAL MAYHEM' : 'TRACKED ARMOUR  ·  RIGID-BODY PHYSICS  ·  TOTAL MAYHEM';
+  const sub = w < 480 ? trn.titleSubCompact : trn.titleSubWide;
   let subSize = 15 * s;
-  ctx.font = `${subSize}px ${MONO}`;
+  ctx.font = fontSpec(_lang, subSize, 'mono');
   const subW = ctx.measureText(sub).width;
   if (subW > w * 0.9) subSize *= (w * 0.9) / subW;
   text(ctx, sub, w / 2, titleY + titleSize * 0.7, subSize, 'rgba(255,255,255,0.8)', 'center', MONO);
@@ -570,30 +631,23 @@ export function drawTitle(game, ctx) {
   const blink = Math.sin(t * 4) > -0.3;
   const promptY = h * (h < 500 ? 0.45 : 0.49);
   if (blink) {
-    const prompt = game.showTouchControls ? 'TAP TO DEPLOY' : 'CLICK OR PRESS ENTER TO DEPLOY';
-    text(ctx, prompt, w / 2, promptY, clamp(24 * s, 18, 28), '#ffffff', 'center');
+    const prompt = game.showTouchControls ? trn.deployTouch : trn.deployDesktop;
+    let promptSize = clamp(24 * s, 17, 28);
+    ctx.font = fontSpec(_lang, promptSize, 'ui');
+    const pw0 = ctx.measureText(prompt).width;
+    if (pw0 > w * 0.9) promptSize *= (w * 0.9) / pw0;
+    text(ctx, prompt, w / 2, promptY, promptSize, '#ffffff', 'center');
   }
 
   const rows = game.showTouchControls
-    ? [
-        ['LEFT STICK', 'Drag to drive & steer tank in any direction'],
-        ['RIGHT STICK', 'Aim turret · push outer ring to fire cannon'],
-        ['BUTTONS', 'MG coax (drag to aim) · MSL salvo · BST nitro'],
-        ['OPTIONS', 'Pause button in top HUD · [J] toggle joysticks'],
-      ]
-    : [
-        ['DRIVE', game.controlMode === 'arcade' ? 'WASD — tank turns toward the direction you press' : 'W/S throttle · A/D steer (classic tank controls)'],
-        ['AIM / FIRE', 'Mouse aim · Left click cannon · Right click (or F) machine gun'],
-        ['BOOST', 'Shift — nitro; drift and flatten trees at speed'],
-        ['MISSILES', 'Space — homing salvo'],
-        ['OPTIONS', `C controls: ${game.controlMode.toUpperCase()}  ·  M music  ·  J joysticks  ·  Gamepad supported`],
-      ];
+    ? trn.touchRows
+    : trn.desktopRows(trn.controlModes[game.controlMode], game.controlMode === 'arcade');
 
   const compact = w < 640;
   const fontSize = compact ? clamp(w * 0.03, 10.5, 12.5) : clamp(13 * s, 10.5, 14);
-  const labelSize = compact ? clamp(w * 0.031, 11, 13) : clamp(13 * s, 10.5, 14);
-  const keyColW = compact ? 102 : Math.max(115, 140 * s);
-  ctx.font = `${fontSize}px ${MONO}`;
+  const labelSize = compact ? clamp(w * 0.031, 10.5, 13) : clamp(13 * s, 10.5, 14);
+  const keyColW = compact ? 108 : Math.max(124, 145 * s);
+  ctx.font = fontSpec(_lang, fontSize, 'mono');
   const maxTextW = Math.max(...rows.map(([, v]) => ctx.measureText(v).width));
   const cw = compact ? Math.min(w - 24, 460) : clamp(Math.max(560 * s, keyColW + maxTextW + 32 * s), 340, w - 32);
   const descMaxW = cw - keyColW - 26;
@@ -617,25 +671,27 @@ export function drawTitle(game, ctx) {
     ry += rowHeights[i];
   });
 
-  if (game.best > 0) text(ctx, `BEST SCORE  ${game.best.toLocaleString()}`, w / 2, cy + ch + 22, clamp(15 * s, 12, 16), '#ffd34d', 'center', MONO);
+  if (game.best > 0) text(ctx, trn.bestScore(game.best.toLocaleString()), w / 2, cy + ch + 22, clamp(15 * s, 12, 16), '#ffd34d', 'center', MONO);
 }
 
 export function pauseButtons(game) {
   const { w, h } = game;
-  const bw = clamp(w * 0.62, 220, 290);
-  const bh = clamp(h * 0.075, 36, 46);
-  const gap = 10;
+  const t = tr(game.lang);
+  const bw = clamp(w * 0.68, 224, 300);
+  const bh = clamp(h * 0.068, 32, 44);
+  const gap = 8;
   const items = [
-    { id: 'resume', label: 'RESUME' },
-    { id: 'music', label: `MUSIC: ${audio.musicOn ? 'ON' : 'OFF'}` },
-    { id: 'touch', label: `JOYSTICKS: ${game.touchUiMode.toUpperCase()}` },
+    { id: 'resume', label: t.resume },
+    { id: 'music', label: audio.musicOn ? t.musicOn : t.musicOff },
+    { id: 'touch', label: t.joysticksBtn(t.touchModes[game.touchUiMode]) },
   ];
-  if (!game.showTouchControls) items.push({ id: 'controls', label: `CONTROLS: ${game.controlMode.toUpperCase()}` });
-  items.push({ id: 'quit', label: 'QUIT TO TITLE' });
+  if (!game.showTouchControls) items.push({ id: 'controls', label: t.controlsBtn(t.controlModes[game.controlMode]) });
+  items.push({ id: 'lang', label: t.langBtn });
+  items.push({ id: 'quit', label: t.quitTitle });
 
   const totalH = items.length * bh + (items.length - 1) * gap;
   const x = w / 2 - bw / 2;
-  const y0 = Math.max(h * 0.36, h / 2 - totalH / 2 + 32);
+  const y0 = clamp(h / 2 - totalH / 2 + 28, Math.max(88, h * 0.24), h - totalH - 14);
   return items.map((it, i) => ({
     ...it,
     x,
@@ -652,12 +708,15 @@ export function pauseButtonHit(game, mx, my) {
 }
 
 export function drawPause(game, ctx) {
+  _lang = game.lang || 'en';
+  const t = tr(_lang);
   const { w, h } = game;
   ctx.fillStyle = 'rgba(0,0,0,0.6)';
   ctx.fillRect(0, 0, w, h);
   const btns = pauseButtons(game);
-  const titleY = Math.max(54, btns[0].y - 54);
-  titleText(ctx, 'PAUSED', w / 2, titleY, clamp(Math.min(w / 8, h / 8), 44, 80));
+  const titleY = Math.max(42, btns[0].y - 44);
+  const titleSize = fitTitleSize(ctx, t.paused, clamp(Math.min(w / 8, h / 8), 38, 76), w * 0.88);
+  titleText(ctx, t.paused, w / 2, titleY, titleSize);
 
   for (const b of btns) {
     const hover = !game.input.usingTouch && game.input.mouseX >= b.x && game.input.mouseX <= b.x + b.w && game.input.mouseY >= b.y && game.input.mouseY <= b.y + b.h;
@@ -668,7 +727,7 @@ export function drawPause(game, ctx) {
       ctx.stroke();
     }
     const color = b.id === 'quit' ? '#ffb347' : b.id === 'resume' ? '#e8d36a' : '#ffffff';
-    text(ctx, b.label, b.x + b.w / 2, b.y + b.h / 2, clamp(b.h * 0.38, 13, 17), color, 'center', FONT, false);
+    text(ctx, b.label, b.x + b.w / 2, b.y + b.h / 2, clamp(b.h * 0.36, 12, 16), color, 'center', FONT, false);
   }
 }
 
@@ -700,6 +759,8 @@ export function upgradeHover(game, mx, my) {
 }
 
 export function drawUpgrade(game, ctx) {
+  _lang = game.lang || 'en';
+  const trn = tr(_lang);
   const { w, h } = game;
   const t = game.upgradeT;
   const fade = clamp(t / 0.3, 0, 1);
@@ -707,10 +768,11 @@ export function drawUpgrade(game, ctx) {
   ctx.fillRect(0, 0, w, h);
   const { stacked, s, rects } = cardRects(game);
   ctx.globalAlpha = fade;
-  const headSize = stacked ? clamp(w * 0.085, 28, 40) : 52 * s;
+  const rawHeadSize = stacked ? clamp(w * 0.085, 24, 38) : 52 * s;
+  const headSize = fitTitleSize(ctx, trn.fieldUpgrade, rawHeadSize, w * 0.9);
   const topY = rects[0][1];
-  titleText(ctx, 'FIELD UPGRADE', w / 2, Math.max(36, topY - (stacked ? 54 : 70 * s)), headSize);
-  const subLabel = game.showTouchControls ? 'Tap an upgrade to install' : 'Choose one  ·  1 / 2 / 3 or click';
+  titleText(ctx, trn.fieldUpgrade, w / 2, Math.max(36, topY - (stacked ? 54 : 70 * s)), headSize);
+  const subLabel = game.showTouchControls ? trn.upgradeSubTouch : trn.upgradeSubDesktop;
   text(ctx, subLabel, w / 2, Math.max(66, topY - (stacked ? 22 : 28 * s)), stacked ? 12 : 14 * s, 'rgba(255,255,255,0.75)', 'center', MONO);
 
   game.upgradeChoices.forEach((u, i) => {
@@ -743,6 +805,7 @@ export function drawUpgrade(game, ctx) {
     ctx.stroke();
 
     const count = game.upgradeCounts[u.id] || 0;
+    const [uName, uDesc] = trn.upgrades[u.id] || [u.name, u.desc];
 
     if (stacked) {
       const r = clamp(ch * 0.32, 24, 38);
@@ -759,11 +822,13 @@ export function drawUpgrade(game, ctx) {
 
       const tx = icx + r + 14;
       const tw = x + cw - tx - 14;
-      text(ctx, u.name.toUpperCase(), tx, y + ch * 0.28, clamp(16 * s, 14, 19), '#ffffff', 'left');
-      ctx.font = `${clamp(12 * s, 11, 13)}px ${MONO}`;
-      const lines = wrapText(ctx, u.desc, tw);
-      lines.forEach((ln, li) => text(ctx, ln, tx, y + ch * 0.54 + li * 15, clamp(12 * s, 11, 13), 'rgba(255,255,255,0.82)', 'left', MONO, false));
-      if (count) text(ctx, `OWNED ×${count}`, x + cw - 14, y + ch * 0.26, 10, '#9fe8ff', 'right', MONO, false);
+      const nameSz = clamp(15 * s, 13, 18);
+      text(ctx, uName.toUpperCase(), tx, y + ch * 0.28, nameSz, '#ffffff', 'left');
+      const descSz = clamp(12 * s, 11, 13);
+      ctx.font = fontSpec(_lang, descSz, 'mono');
+      const lines = wrapText(ctx, uDesc, tw);
+      lines.forEach((ln, li) => text(ctx, ln, tx, y + ch * 0.54 + li * 15, descSz, 'rgba(255,255,255,0.82)', 'left', MONO, false));
+      if (count) text(ctx, trn.owned(count), x + cw - 14, y + ch * 0.26, 10, '#9fe8ff', 'right', MONO, false);
     } else {
       const cx = x + cw / 2, cy = y + 90 * s;
       ctx.fillStyle = sel ? 'rgba(232,211,106,0.18)' : 'rgba(255,255,255,0.06)';
@@ -774,11 +839,16 @@ export function drawUpgrade(game, ctx) {
       ctx.lineWidth = 2;
       ctx.stroke();
       text(ctx, u.icon, cx, cy + 2 * s, 50 * s, '#e8d36a', 'center', 'system-ui, sans-serif', false);
-      text(ctx, u.name.toUpperCase(), cx, y + 172 * s, 19 * s, '#ffffff', 'center');
-      ctx.font = `${13 * s}px ${MONO}`;
-      const lines = wrapText(ctx, u.desc, cw - 36 * s);
-      lines.forEach((l, li) => text(ctx, l, cx, y + 205 * s + li * 18 * s, 13 * s, 'rgba(255,255,255,0.8)', 'center', MONO, false));
-      if (count) text(ctx, `OWNED ×${count}`, cx, y + ch - 42 * s, 11 * s, '#9fe8ff', 'center', MONO, false);
+      let nameSz = 18 * s;
+      ctx.font = fontSpec(_lang, nameSz, 'ui');
+      const nw = ctx.measureText(uName.toUpperCase()).width;
+      if (nw > cw - 20 * s) nameSz *= (cw - 20 * s) / nw;
+      text(ctx, uName.toUpperCase(), cx, y + 172 * s, nameSz, '#ffffff', 'center');
+      const descSz = 13 * s;
+      ctx.font = fontSpec(_lang, descSz, 'mono');
+      const lines = wrapText(ctx, uDesc, cw - 36 * s);
+      lines.forEach((l, li) => text(ctx, l, cx, y + 205 * s + li * 18 * s, descSz, 'rgba(255,255,255,0.8)', 'center', MONO, false));
+      if (count) text(ctx, trn.owned(count), cx, y + ch - 42 * s, 11 * s, '#9fe8ff', 'center', MONO, false);
       if (!game.showTouchControls) text(ctx, `[${i + 1}]`, cx, y + ch - 20 * s, 14 * s, sel ? '#e8d36a' : 'rgba(255,255,255,0.4)', 'center', MONO, false);
     }
   });
@@ -787,7 +857,7 @@ export function drawUpgrade(game, ctx) {
 
 export function gameOverTitleRect(game) {
   const s = clamp(Math.min(game.w / 1200, game.h / 800), 0.56, 1.3);
-  const bw = 150;
+  const bw = 172;
   const bh = 36;
   const rowsH = 5 * 36 * s + 30 * s;
   const py = game.h * 0.36;
@@ -801,6 +871,8 @@ export function gameOverTitleHit(game, mx, my) {
 }
 
 export function drawGameOver(game, ctx) {
+  _lang = game.lang || 'en';
+  const trn = tr(_lang);
   const { w, h } = game;
   const t = game.deathTimer;
   const fade = clamp((t - 0.8) / 1.0, 0, 1);
@@ -810,21 +882,13 @@ export function drawGameOver(game, ctx) {
   ctx.globalAlpha = fade;
   const s = clamp(Math.min(w / 1200, h / 800), 0.56, 1.3);
 
-  let titleSize = 76 * s;
-  ctx.font = `${titleSize}px ${FONT}`;
-  const tw = ctx.measureText('TANK DESTROYED').width;
-  if (tw > w * 0.88) titleSize *= (w * 0.88) / tw;
-  titleText(ctx, 'TANK DESTROYED', w / 2, h * 0.24, titleSize);
+  const titleSize = fitTitleSize(ctx, trn.tankDestroyed, 76 * s, w * 0.88);
+  titleText(ctx, trn.tankDestroyed, w / 2, h * 0.24, titleSize);
 
   const st = game.stats;
   const mins = Math.floor(st.time / 60), secs = Math.floor(st.time % 60).toString().padStart(2, '0');
-  const rows = [
-    ['SCORE', game.score.toLocaleString()],
-    ['WAVE REACHED', String(game.wave)],
-    ['KILLS', String(st.kills)],
-    ['BASES DESTROYED', String(st.bases)],
-    ['TIME SURVIVED', `${mins}:${secs}`],
-  ];
+  const vals = [game.score.toLocaleString(), String(game.wave), String(st.kills), String(st.bases), `${mins}:${secs}`];
+  const rows = trn.statsLabels.map((k, i) => [k, vals[i]]);
   const pw = Math.min(w - 28, 440 * s), ph = rows.length * 36 * s + 30 * s;
   const px = w / 2 - pw / 2, py = h * 0.36;
   panel(ctx, px, py, pw, ph, 0.7);
@@ -833,15 +897,16 @@ export function drawGameOver(game, ctx) {
     text(ctx, k, px + 22 * s, y, clamp(15 * s, 12, 18), '#e8d36a');
     text(ctx, v, px + pw - 22 * s, y, clamp(18 * s, 13, 22), '#fff', 'right', MONO);
   });
-  if (game.newBest) text(ctx, '★ NEW BEST SCORE ★', w / 2, py + ph + 32 * s, clamp(24 * s, 16, 26), '#ffd34d', 'center');
+  if (game.newBest) text(ctx, trn.newBest, w / 2, py + ph + 32 * s, clamp(24 * s, 16, 26), '#ffd34d', 'center');
   if (t > 2.5) {
     if (Math.sin(t * 4) > -0.3) {
-      const msg = game.showTouchControls ? 'TAP TO REDEPLOY' : 'CLICK / ENTER TO REDEPLOY  ·  ESC FOR TITLE';
-      text(ctx, msg, w / 2, py + ph + 70 * s, clamp(18 * s, 14, 20), '#fff', 'center');
+      const msg = game.showTouchControls ? trn.redeployTouch : trn.redeployDesktop;
+      const msgSz = fitTitleSize(ctx, msg, clamp(18 * s, 13, 20), w * 0.9);
+      text(ctx, msg, w / 2, py + ph + 70 * s, msgSz, '#fff', 'center');
     }
-    const tr = gameOverTitleRect(game);
-    panel(ctx, tr.x, tr.y, tr.w, tr.h, 0.65);
-    text(ctx, 'TITLE MENU', tr.x + tr.w / 2, tr.y + tr.h / 2, 13, '#e8d36a', 'center', FONT, false);
+    const trRect = gameOverTitleRect(game);
+    panel(ctx, trRect.x, trRect.y, trRect.w, trRect.h, 0.65);
+    text(ctx, trn.titleMenu, trRect.x + trRect.w / 2, trRect.y + trRect.h / 2, 13, '#e8d36a', 'center', FONT, false);
   }
   ctx.globalAlpha = 1;
 }
