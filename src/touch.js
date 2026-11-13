@@ -45,8 +45,12 @@ export function getTouchLayout(w, h, insets = null) {
   const minimap = { x: w - padR - mapSize, y: padT, size: mapSize };
 
   const pause = narrow
-    ? { x: Math.round(w / 2 - 18), y: padT, w: 36, h: 34 }
+    ? { x: status.x + status.w + 8, y: padT, w: 36, h: 34 }
     : { x: status.x + status.w + 10, y: padT, w: 38, h: 38 };
+
+  const handBtn = narrow
+    ? { x: pause.x, y: padT + 40, w: 66, h: 28 }
+    : { x: pause.x + pause.w + 8, y: padT, w: w < 960 ? 76 : 90, h: 38 };
 
   return {
     w,
@@ -70,6 +74,7 @@ export function getTouchLayout(w, h, insets = null) {
     status,
     minimap,
     pause,
+    handBtn,
   };
 }
 
@@ -97,8 +102,10 @@ export class TouchControls {
     this.bst = { id: null, active: false };
     this.msl = { id: null, active: false };
     this.pauseId = null;
+    this.handId = null;
     this.mslPressed = false;
     this.pausePressed = false;
+    this.handPressed = false;
     this.taps = [];
     this.deadzone = 0.14;
     this.fireThreshold = 0.30;
@@ -111,8 +118,10 @@ export class TouchControls {
     this.bst = { id: null, active: false };
     this.msl = { id: null, active: false };
     this.pauseId = null;
+    this.handId = null;
     this.mslPressed = false;
     this.pausePressed = false;
+    this.handPressed = false;
   }
 
   resetAll() {
@@ -123,12 +132,18 @@ export class TouchControls {
   endFrame() {
     this.mslPressed = false;
     this.pausePressed = false;
+    this.handPressed = false;
     this.taps.length = 0;
   }
 
   _inPause(x, y, layout) {
     const p = layout.pause;
     return x >= p.x - 8 && x <= p.x + p.w + 8 && y >= p.y - 8 && y <= p.y + p.h + 8;
+  }
+
+  _inHandBtn(x, y, layout) {
+    const b = layout.handBtn;
+    return !!b && x >= b.x - 6 && x <= b.x + b.w + 6 && y >= b.y - 6 && y <= b.y + b.h + 6;
   }
 
   _inHudBox(x, y, layout) {
@@ -163,6 +178,12 @@ export class TouchControls {
     if (this._inPause(x, y, layout)) {
       this.pauseId = id;
       this.pausePressed = true;
+      return true;
+    }
+
+    if (this._inHandBtn(x, y, layout)) {
+      this.handId = id;
+      this.handPressed = true;
       return true;
     }
 
@@ -258,7 +279,7 @@ export class TouchControls {
       }
       return true;
     }
-    return id === this.bst.id || id === this.msl.id || id === this.pauseId;
+    return id === this.bst.id || id === this.msl.id || id === this.pauseId || id === this.handId;
   }
 
   onEnd(id) {
@@ -284,6 +305,10 @@ export class TouchControls {
     }
     if (id === this.pauseId) {
       this.pauseId = null;
+      return true;
+    }
+    if (id === this.handId) {
+      this.handId = null;
       return true;
     }
     return false;
@@ -595,16 +620,77 @@ export function drawPauseButton(ctx, rect) {
   ctx.restore();
 }
 
+export function drawHandButton(ctx, rect, active, lang = 'en') {
+  const { x, y, w, h } = rect;
+  const t = tr(lang);
+  ctx.save();
+  ctx.fillStyle = active ? 'rgba(26,54,32,0.85)' : 'rgba(10,14,12,0.58)';
+  ctx.beginPath();
+  ctx.moveTo(x + 6, y);
+  ctx.lineTo(x + w, y);
+  ctx.lineTo(x + w, y + h - 6);
+  ctx.lineTo(x + w - 6, y + h);
+  ctx.lineTo(x, y + h);
+  ctx.lineTo(x, y + 6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = active ? '#7dff8a' : 'rgba(232,211,106,0.38)';
+  ctx.lineWidth = active ? 1.8 : 1.2;
+  ctx.stroke();
+
+  // Small stylized palm icon on left side of button
+  const ix = x + Math.round(h * 0.42);
+  const iy = y + h * 0.54;
+  ctx.strokeStyle = active ? '#7dff8a' : '#e8d36a';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.arc(ix, iy + 2, h * 0.16, 0, Math.PI);
+  for (let f = -1.5; f <= 1.5; f += 1) {
+    const fx = ix + f * (h * 0.085);
+    ctx.moveTo(fx, iy + 1);
+    ctx.lineTo(fx, iy - h * (Math.abs(f) < 1 ? 0.22 : 0.16));
+  }
+  ctx.stroke();
+
+  ctx.font = fontSpec(lang, Math.round(clamp(h * 0.34, 9.5, 12)), 'mono');
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = active ? '#7dff8a' : '#e8d36a';
+  ctx.fillText(t.freeHandBtn, x + h * 0.62 + (w - h * 0.62) / 2, y + h / 2 + 0.5);
+  ctx.restore();
+}
+
 export function drawTouchControls(game, ctx) {
   const p = game.player;
   if (!p || !p.alive || game.state !== 'playing') return;
 
   const layout = getTouchLayout(game.w, game.h, game.insets);
   const tc = game.input.touch;
+  const fh = game.freeHand;
+
+  // Mirror active Free Hand gesture onto the Right Joystick visual when user isn't directly dragging it
+  let rightStick = tc.right;
+  if (!tc.right.active && fh && fh.enabled && fh.detected) {
+    const g = fh.gesture;
+    const dist = (g.dx || g.dy) ? layout.jr * 0.85 : 0;
+    const ang = g.angle ?? game.touchAim ?? p.turretAngle;
+    rightStick = {
+      active: g.action !== 'idle' && g.action !== 'none',
+      originX: layout.rightHome.x,
+      originY: layout.rightHome.y,
+      curX: layout.rightHome.x + g.dx * dist,
+      curY: layout.rightHome.y + g.dy * dist,
+      x: g.dx,
+      y: g.dy,
+      mag: (g.dx || g.dy) ? 1 : 0,
+      angle: ang,
+      firing: g.fire,
+    };
+  }
 
   // Dual joysticks
   drawJoystick(ctx, tc.left, layout.leftHome, layout.jr, layout.knobR, false, game.time, game.lang);
-  drawJoystick(ctx, tc.right, layout.rightHome, layout.jr, layout.knobR, true, game.time, game.lang);
+  drawJoystick(ctx, rightStick, layout.rightHome, layout.jr, layout.knobR, true, game.time, game.lang);
 
   // Secondary action buttons
   drawActionButton(ctx, layout.buttons.bst, {

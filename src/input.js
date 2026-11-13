@@ -1,6 +1,7 @@
 // Keyboard, mouse, gamepad and dual-joystick touch input, normalised into a single control state.
 
 import { TouchControls, getTouchLayout } from './touch.js';
+import { getFreeHandRect, hitFreeHandPanel } from './freehand.js';
 
 export class Input {
   constructor(canvas) {
@@ -46,6 +47,8 @@ export class Input {
       this.mouseDown = [false, false, false];
       this._mouseTouchActive = false;
       this.touch.resetAll();
+      const ctx = readCtx();
+      if (ctx.freeHand && ctx.freeHand.padPointerId !== null) ctx.freeHand.clearPadInput();
     };
     window.addEventListener('blur', resetAll);
     document.addEventListener('visibilitychange', () => {
@@ -55,8 +58,14 @@ export class Input {
     canvas.addEventListener('mousemove', (e) => {
       if (performance.now() - this._lastTouchTime < 400) return;
       const [x, y] = canvasPoint(e.clientX, e.clientY);
+      const ctx = readCtx();
+      const fh = ctx.freeHand;
+      if (fh && fh.enabled && fh.backend === 'pad' && fh.padPointerId === 'mouse') {
+        const r = getFreeHandRect(getTouchLayout(ctx.w, ctx.h, ctx.insets));
+        fh.setPadInput((x - r.x) / r.w, (y - r.y) / r.h, (e.buttons & 2) !== 0 || e.shiftKey || fh.padOpen);
+        return;
+      }
       if (this._mouseTouchActive) {
-        const ctx = readCtx();
         this.touch.onMove('mouse', x, y, getTouchLayout(ctx.w, ctx.h, ctx.insets));
         return;
       }
@@ -74,15 +83,40 @@ export class Input {
       this.mouseY = y;
       this.usingGamepad = false;
 
+      const ctx = readCtx();
+      const fh = ctx.freeHand;
+      if (ctx.state === 'playing' && fh && fh.enabled) {
+        const layout = getTouchLayout(ctx.w, ctx.h, ctx.insets);
+        const fhHit = hitFreeHandPanel(x, y, layout, fh);
+        if (fhHit === 'mode') {
+          if (e.button === 0) fh.toggleMode();
+          return;
+        }
+        if (fhHit === 'padOpen') {
+          fh.padPointerId = 'mouseOpen';
+          fh.padOpen = true;
+          fh.setPadInput(fh.handX, fh.handY, true);
+          return;
+        }
+        if (fhHit === 'pad') {
+          if (fh.backend === 'pad') {
+            const r = getFreeHandRect(layout);
+            fh.padPointerId = 'mouse';
+            fh.setPadInput((x - r.x) / r.w, (y - r.y) / r.h, e.button === 2 || e.shiftKey || fh.padOpen);
+          }
+          return;
+        }
+      }
+
       if (e.button === 0) {
-        const ctx = readCtx();
         if (ctx.allowMouseTouch && ctx.state === 'playing') {
           const layout = getTouchLayout(ctx.w, ctx.h, ctx.insets);
           const nearVirtual =
             this.touch._inPause(x, y, layout) ||
+            this.touch._inHandBtn(x, y, layout) ||
             this.touch._hitButton(x, y, layout) !== null ||
-            Math.hypot(x - layout.leftHome.x, y - layout.leftHome.y) <= layout.jr * 1.35 ||
-            Math.hypot(x - layout.rightHome.x, y - layout.rightHome.y) <= layout.jr * 1.35;
+            Math.hypot(x - layout.leftHome.x, y - layout.leftHome.y) <= layout.jr * 1.08 ||
+            Math.hypot(x - layout.rightHome.x, y - layout.rightHome.y) <= layout.jr * 1.08;
           if (nearVirtual && this.touch.onStart('mouse', x, y, ctx.state, layout)) {
             this._mouseTouchActive = true;
             return;
@@ -96,6 +130,15 @@ export class Input {
     });
 
     window.addEventListener('mouseup', (e) => {
+      const ctx = readCtx();
+      const fh = ctx.freeHand;
+      if (fh && fh.padPointerId === 'mouseOpen') {
+        fh.padPointerId = null;
+        fh.padOpen = false;
+        if (fh.detected) fh.setPadInput(fh.handX, fh.handY, false);
+      } else if (fh && fh.padPointerId === 'mouse') {
+        fh.clearPadInput();
+      }
       if (e.button === 0 && this._mouseTouchActive) {
         this.touch.onEnd('mouse');
         this._mouseTouchActive = false;
@@ -112,8 +155,30 @@ export class Input {
       this.usingGamepad = false;
       const ctx = readCtx();
       const layout = getTouchLayout(ctx.w, ctx.h, ctx.insets);
+      const fh = ctx.freeHand;
       for (const t of e.changedTouches) {
         const [x, y] = canvasPoint(t.clientX, t.clientY);
+        if (ctx.state === 'playing' && fh && fh.enabled) {
+          const fhHit = hitFreeHandPanel(x, y, layout, fh);
+          if (fhHit === 'mode') {
+            fh.toggleMode();
+            continue;
+          }
+          if (fhHit === 'padOpen') {
+            fh.padPointerId = t.identifier;
+            fh.padOpen = true;
+            fh.setPadInput(fh.handX, fh.handY, true);
+            continue;
+          }
+          if (fhHit === 'pad') {
+            if (fh.backend === 'pad') {
+              const r = getFreeHandRect(layout);
+              fh.padPointerId = t.identifier;
+              fh.setPadInput((x - r.x) / r.w, (y - r.y) / r.h, fh.padOpen);
+            }
+            continue;
+          }
+        }
         this.touch.onStart(t.identifier, x, y, ctx.state, layout);
       }
     }, { passive: false });
@@ -123,8 +188,14 @@ export class Input {
       this._lastTouchTime = performance.now();
       const ctx = readCtx();
       const layout = getTouchLayout(ctx.w, ctx.h, ctx.insets);
+      const fh = ctx.freeHand;
       for (const t of e.changedTouches) {
         const [x, y] = canvasPoint(t.clientX, t.clientY);
+        if (fh && fh.enabled && fh.backend === 'pad' && fh.padPointerId === t.identifier) {
+          const r = getFreeHandRect(layout);
+          fh.setPadInput((x - r.x) / r.w, (y - r.y) / r.h, fh.padOpen);
+          continue;
+        }
         this.touch.onMove(t.identifier, x, y, layout);
       }
     }, { passive: false });
@@ -132,7 +203,19 @@ export class Input {
     const endTouch = (e) => {
       e.preventDefault();
       this._lastTouchTime = performance.now();
+      const ctx = readCtx();
+      const fh = ctx.freeHand;
       for (const t of e.changedTouches) {
+        if (fh && fh.padPointerId === t.identifier) {
+          if (fh.padOpen) {
+            fh.padPointerId = null;
+            fh.padOpen = false;
+            if (fh.detected) fh.setPadInput(fh.handX, fh.handY, false);
+          } else {
+            fh.clearPadInput();
+          }
+          continue;
+        }
         this.touch.onEnd(t.identifier);
       }
     };
