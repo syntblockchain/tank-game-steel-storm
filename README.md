@@ -3,7 +3,7 @@
 A fast, high-energy top-down tank shooter with a real rigid-body physics core.
 It has no dependencies and no asset files: every sprite is painted in code at start-up, and every sound effect and the music are synthesised with Web Audio.
 
-**[Play in the browser](https://griffio.github.io/tank-game-steel-storm/)**
+**[Play in the browser](https://syntblockchain.github.io/tank-game-steel-storm/)**
 
 ![Steel Storm title screen](docs/screenshots/title.jpg)
 
