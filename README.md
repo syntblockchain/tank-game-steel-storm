@@ -25,15 +25,15 @@ npm run build      # dist/steel-storm.html: one self-contained file, double-clic
 
 ## Controls
 
-| Action | Keyboard / mouse | Gamepad | Mobile / Touch |
+| Action | Keyboard / mouse | Gamepad | Touch / On-screen HUD |
 | --- | --- | --- | --- |
-| Drive | WASD (arcade: tank turns toward the direction pressed; `C` switches to classic tank steering) | Left stick | Left joystick |
-| Aim | Mouse | Right stick | Right joystick (or drag `MG`) |
-| Cannon | Left click | RT | Right joystick (outer ring) |
-| Coax machine gun | Right click / `F` (overheats) | LT / RB | `MG` button (hold & drag to aim) |
-| Boost | Shift | A / LB | `BST` button |
-| Homing missiles | Space / `E` | B / X | `MSL` button |
-| Pause · options | Esc · `M` music · `J` joysticks · `L` language (EN / Tiếng Việt) | Start | Top HUD pause button |
+| Drive | WASD (arcade: tank turns toward the direction pressed; `C` switches to classic tank steering) | Left stick | Left joystick (shown on laptop & mobile) |
+| Aim | Mouse (or `[H]` Free Hand webcam 4-triangle zones) | Right stick | Right joystick (or drag `MG` / Free Hand) |
+| Cannon | Left click (or Open hand in Free Hand) | RT | Right joystick outer ring (or Free Hand open hand) |
+| Coax machine gun | Right click / `F` (overheats) | LT / RB | `MG` button (hold & drag to aim, shown on laptop & mobile) |
+| Boost | Shift | A / LB | `BST` button (shown on laptop & mobile) |
+| Homing missiles | Space / `E` | B / X | `MSL` button (shown on laptop & mobile) |
+| Pause · options | Esc · `M` music · `H` free hand · `J` joysticks · `L` language | Start | Top HUD pause & `HAND` buttons |
 
 ## What's in it
 
@@ -59,6 +59,7 @@ npm run build      # dist/steel-storm.html: one self-contained file, double-clic
 | `src/audio.js` | Synthesised SFX, engine/rotor loops, sequenced music |
 | `src/game.js` | Loop, combat, waves, scoring, upgrades, camera, render order |
 | `src/hud.js` | HUD, minimap, menus |
+| `src/freehand.js` | AirGesture-style right-hand 5-zone webcam & pad controller |
 | `src/i18n.js` | English / Vietnamese strings, locale detection and font stacks |
 | `src/touch.js` | Dual virtual joysticks, mobile action buttons and responsive touch HUD layout |
 

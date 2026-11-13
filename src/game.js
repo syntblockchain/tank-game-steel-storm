@@ -14,6 +14,7 @@ import { clamp, lerp, rand, randInt, pick, chance, TAU, angleDiff, makeCanvas, m
 import * as HUD from './hud.js';
 import { PICKUPS } from './pickups.js';
 import { detectLang, tr, fontSpec } from './i18n.js';
+import { FreeHandController } from './freehand.js';
 
 const STEP = 1 / 60;
 
@@ -44,13 +45,16 @@ export class Game {
     this.lang = detectLang();
     if (typeof document !== 'undefined' && document.documentElement) document.documentElement.lang = this.lang;
     this.controlMode = 'arcade';
-    this.touchUiMode = 'auto';
+    this.touchUiMode = 'on';
+    this.freeHand = new FreeHandController();
     this.insets = { top: 0, right: 0, bottom: 0, left: 0 };
     try {
       this.best = parseInt(localStorage.getItem('steelstorm.best') || '0', 10) || 0;
       this.controlMode = localStorage.getItem('steelstorm.controls') || 'arcade';
       const savedTouch = localStorage.getItem('steelstorm.touch');
-      if (savedTouch === 'auto' || savedTouch === 'on' || savedTouch === 'off') this.touchUiMode = savedTouch;
+      if (savedTouch === 'on' || savedTouch === 'off') this.touchUiMode = savedTouch;
+      const savedHandMode = localStorage.getItem('steelstorm.handMode');
+      if (savedHandMode === 'smart' || savedHandMode === 'aim') this.freeHand.mode = savedHandMode;
     } catch {
       this.best = 0;
     }
@@ -60,7 +64,8 @@ export class Game {
       h: this.h,
       insets: this.insets,
       showTouch: this.showTouchControls,
-      allowMouseTouch: this.touchUiMode === 'on',
+      allowMouseTouch: this.showTouchControls,
+      freeHand: this.freeHand,
     });
     this.input.onGesture = () => audio.init();
     this.resize();
@@ -189,6 +194,7 @@ export class Game {
     if (dt > 0.1) dt = 0.1;
     if (dt < 0) dt = 0;
     this.input.pollGamepad();
+    if (this.state === 'playing') this.freeHand.update(now);
     this.handleGlobalInput();
 
     if (this.state === 'playing' || this.state === 'upgrade' || this.state === 'gameover') {
@@ -234,12 +240,17 @@ export class Game {
     if (inp.hit('KeyM')) audio.toggleMusic();
     if (inp.hit('KeyJ')) this.toggleTouchUi();
     if (inp.hit('KeyL')) this.toggleLang();
+    if (inp.hit('KeyH')) this.toggleFreeHand();
     const tap = inp.touchTap || (inp.mouseClicked[0] ? { x: inp.mouseX, y: inp.mouseY } : null);
 
     if (this.state === 'title') {
       if (inp.hit('KeyC')) this.toggleControls();
       if (tap && HUD.titleLangToggleHit(this, tap.x, tap.y)) {
         this.toggleLang();
+        return;
+      }
+      if (tap && HUD.titleFreeHandToggleHit(this, tap.x, tap.y)) {
+        this.toggleFreeHand();
         return;
       }
       if (tap && HUD.titleTouchToggleHit(this, tap.x, tap.y)) {
@@ -249,6 +260,7 @@ export class Game {
       }
       if (inp.hit('Enter', 'Space') || tap || inp.padHit(0) || inp.padHit(9)) this.startGame();
     } else if (this.state === 'playing') {
+      if (inp.touch.handPressed) this.toggleFreeHand();
       if (inp.hit('Escape', 'KeyP') || inp.padHit(9) || inp.touch.pausePressed) {
         this.state = 'paused';
         audio.updateEngine(0, 0, false, false);
@@ -272,6 +284,10 @@ export class Game {
           audio.init();
           audio.toggleMusic();
           audio.play('ui', undefined, undefined, { freq: 520 });
+        } else if (hit === 'freehand') {
+          this.toggleFreeHand();
+        } else if (hit === 'handmode') {
+          this.toggleFreeHandMode();
         } else if (hit === 'touch') {
           this.toggleTouchUi();
           audio.play('ui', undefined, undefined, { freq: 600 });
@@ -297,6 +313,20 @@ export class Game {
     }
   }
 
+  toggleFreeHand() {
+    if (this.freeHand.enabled) this.freeHand.disable();
+    else this.freeHand.enable();
+    audio.play('ui', undefined, undefined, { freq: this.freeHand.enabled ? 760 : 420 });
+  }
+
+  toggleFreeHandMode() {
+    this.freeHand.toggleMode();
+    try {
+      localStorage.setItem('steelstorm.handMode', this.freeHand.mode);
+    } catch {}
+    audio.play('ui', undefined, undefined, { freq: 640 });
+  }
+
   toggleLang() {
     this.lang = this.lang === 'vi' ? 'en' : 'vi';
     if (typeof document !== 'undefined' && document.documentElement) document.documentElement.lang = this.lang;
@@ -307,7 +337,7 @@ export class Game {
   }
 
   toggleTouchUi() {
-    const order = ['auto', 'on', 'off'];
+    const order = ['on', 'auto', 'off'];
     this.touchUiMode = order[(order.indexOf(this.touchUiMode) + 1) % order.length];
     try {
       localStorage.setItem('steelstorm.touch', this.touchUiMode);
@@ -410,11 +440,19 @@ export class Game {
     const pad = inp.pad && (Math.abs(lx) > 0 || Math.abs(ly) > 0);
     const tLeft = inp.touch.left;
     const touchDrive = this.showTouchControls && tLeft.active && tLeft.mag > 0;
+    const leftDriving = touchDrive || pad || mx !== 0 || my !== 0;
+
+    const fh = this.freeHand;
+    const handActive = !!(fh && fh.enabled && fh.detected);
+    const hg = handActive ? fh.gesture : null;
+    const handDrive = handActive && fh.mode === 'smart' && !leftDriving && hg && (hg.dx !== 0 || hg.dy !== 0) && !hg.fire;
 
     if (touchDrive) {
       driveToward(p, tLeft.x, tLeft.y, tLeft.mag, true);
     } else if (pad) {
       driveToward(p, lx, ly, Math.min(1, Math.hypot(lx, ly)), true);
+    } else if (handDrive) {
+      driveToward(p, hg.dx, hg.dy, 1, true);
     } else if (this.controlMode === 'tank') {
       p.throttle = -my;
       p.turn = mx;
@@ -427,23 +465,33 @@ export class Game {
       }
     }
 
-    // Aim
+    // Aim (Right joystick / Free Hand / Gamepad / Mouse)
     const [rx, ry] = inp.stick(2, 3, 0.25);
     const tRight = inp.touch.right;
     const tMg = inp.touch.mg;
-    const usingTouchAim =
-      inp.usingTouch ||
-      (this.showTouchControls && (tRight.active || (tMg.active && tMg.aiming)));
+    const directTouchAim = this.showTouchControls && (tRight.active || (tMg.active && tMg.aiming));
+    const usingTouchButtonOnly = this.showTouchControls && !directTouchAim && (tMg.active || inp.touch.bst.active || inp.touch.msl.active);
+    const aimDist = clamp((Math.min(this.w, this.h) / this.cam.zoom) * 0.36, 180, 320);
+
     if (inp.usingGamepad) {
       if (rx || ry) this.padAim = Math.atan2(ry, rx);
       p.aim = this.padAim ?? p.turretAngle;
       this.aimX = p.x + Math.cos(p.aim) * 320;
       this.aimY = p.y + Math.sin(p.aim) * 320;
-    } else if (usingTouchAim) {
+    } else if (directTouchAim || inp.usingTouch) {
       if (tRight.active && tRight.mag > 0) this.touchAim = tRight.angle;
       else if (tMg.active && tMg.aiming) this.touchAim = tMg.aimAngle;
+      else if (handActive && hg.angle !== null) this.touchAim = hg.angle;
       p.aim = this.touchAim ?? p.turretAngle;
-      const aimDist = clamp((Math.min(this.w, this.h) / this.cam.zoom) * 0.36, 180, 320);
+      this.aimX = p.x + Math.cos(p.aim) * aimDist;
+      this.aimY = p.y + Math.sin(p.aim) * aimDist;
+    } else if (handActive) {
+      if (hg.angle !== null) this.touchAim = hg.angle;
+      p.aim = this.touchAim ?? p.turretAngle;
+      this.aimX = p.x + Math.cos(p.aim) * aimDist;
+      this.aimY = p.y + Math.sin(p.aim) * aimDist;
+    } else if (usingTouchButtonOnly) {
+      p.aim = this.touchAim ?? p.turretAngle;
       this.aimX = p.x + Math.cos(p.aim) * aimDist;
       this.aimY = p.y + Math.sin(p.aim) * aimDist;
     } else {
@@ -451,10 +499,11 @@ export class Game {
       this.aimX = wx;
       this.aimY = wy;
       p.aim = Math.atan2(wy - p.y, wx - p.x);
+      this.touchAim = p.aim;
     }
 
     p.wantBoost = inp.down('ShiftLeft', 'ShiftRight') || inp.padButton(0) || inp.padButton(4) || (this.showTouchControls && inp.touch.bst.active);
-    const fire = inp.mouseDown[0] || inp.padValue(7) > 0.3 || (this.showTouchControls && tRight.firing);
+    const fire = inp.mouseDown[0] || inp.padValue(7) > 0.3 || (this.showTouchControls && tRight.firing) || (handActive && hg.fire);
     const mg = inp.mouseDown[2] || inp.padValue(6) > 0.3 || inp.padButton(5) || inp.down('KeyF') || (this.showTouchControls && tMg.active);
     if (fire && p.fireCannon()) this.stats.shots++;
     if (mg) p.fireMg();
@@ -1261,7 +1310,7 @@ export class Game {
   // --- Render ---------------------------------------------------------------------------------------
 
   render(dt) {
-    this.canvas.style.cursor = this.touchUiMode === 'on' && !this.input.usingTouch ? 'default' : 'none';
+    this.canvas.style.cursor = this.showTouchControls && !this.input.usingTouch ? 'default' : 'none';
     const ctx = this.ctx;
     const dpr = this.dpr;
     const c = this.cam;
