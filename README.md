@@ -33,7 +33,7 @@ npm run build      # dist/steel-storm.html: one self-contained file, double-clic
 | Coax machine gun | Right click / `F` (overheats) | LT / RB | `MG` button (hold & drag to aim) |
 | Boost | Shift | A / LB | `BST` button |
 | Homing missiles | Space / `E` | B / X | `MSL` button |
-| Pause · music | Esc · `M` (`J` toggles joysticks) | Start | Top HUD pause button |
+| Pause · options | Esc · `M` music · `J` joysticks · `L` language (EN / Tiếng Việt) | Start | Top HUD pause button |
 
 ## What's in it
 
@@ -59,6 +59,7 @@ npm run build      # dist/steel-storm.html: one self-contained file, double-clic
 | `src/audio.js` | Synthesised SFX, engine/rotor loops, sequenced music |
 | `src/game.js` | Loop, combat, waves, scoring, upgrades, camera, render order |
 | `src/hud.js` | HUD, minimap, menus |
+| `src/i18n.js` | English / Vietnamese strings, locale detection and font stacks |
 | `src/touch.js` | Dual virtual joysticks, mobile action buttons and responsive touch HUD layout |
 
 `tools/` holds headless-Chrome test scripts (`cd tools && npm i && node bot.mjs`) and `sim-tank.mjs`, which checks the vehicle handling numbers in Node.

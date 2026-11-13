@@ -13,6 +13,7 @@ import { buildSprites, drawSprite, soft } from './sprites.js';
 import { clamp, lerp, rand, randInt, pick, chance, TAU, angleDiff, makeCanvas, makeNoise } from './util.js';
 import * as HUD from './hud.js';
 import { PICKUPS } from './pickups.js';
+import { detectLang, tr, fontSpec } from './i18n.js';
 
 const STEP = 1 / 60;
 
@@ -40,6 +41,8 @@ export class Game {
     this.input = new Input(canvas);
     this.sprites = buildSprites();
     this.state = 'title';
+    this.lang = detectLang();
+    if (typeof document !== 'undefined' && document.documentElement) document.documentElement.lang = this.lang;
     this.controlMode = 'arcade';
     this.touchUiMode = 'auto';
     this.insets = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -172,9 +175,10 @@ export class Game {
     this.aimX = s.x + Math.cos(this.touchAim) * 280;
     this.aimY = s.y + Math.sin(this.touchAim) * 280;
     this.input.touch.resetAll();
+    const t = tr(this.lang);
     audio.startMusic();
     audio.play('stinger', undefined, undefined, { chord: [45, 52, 57, 60] });
-    this.say('DEPLOYED', 'Survive the storm. Destroy everything.', '#e8d36a');
+    this.say(t.deployedTitle, t.deployedSub, '#e8d36a');
   }
 
   // --- Main loop -------------------------------------------------------------------------
@@ -229,10 +233,15 @@ export class Game {
     const inp = this.input;
     if (inp.hit('KeyM')) audio.toggleMusic();
     if (inp.hit('KeyJ')) this.toggleTouchUi();
+    if (inp.hit('KeyL')) this.toggleLang();
     const tap = inp.touchTap || (inp.mouseClicked[0] ? { x: inp.mouseX, y: inp.mouseY } : null);
 
     if (this.state === 'title') {
       if (inp.hit('KeyC')) this.toggleControls();
+      if (tap && HUD.titleLangToggleHit(this, tap.x, tap.y)) {
+        this.toggleLang();
+        return;
+      }
       if (tap && HUD.titleTouchToggleHit(this, tap.x, tap.y)) {
         this.toggleTouchUi();
         audio.play('ui', undefined, undefined, { freq: 660 });
@@ -268,6 +277,8 @@ export class Game {
           audio.play('ui', undefined, undefined, { freq: 600 });
         } else if (hit === 'controls') {
           this.toggleControls();
+        } else if (hit === 'lang') {
+          this.toggleLang();
         } else if (hit === 'quit') {
           this.toTitle();
         } else if (inp.mouseClicked[0]) {
@@ -284,6 +295,15 @@ export class Game {
       }
       if (inp.hit('Escape')) this.toTitle();
     }
+  }
+
+  toggleLang() {
+    this.lang = this.lang === 'vi' ? 'en' : 'vi';
+    if (typeof document !== 'undefined' && document.documentElement) document.documentElement.lang = this.lang;
+    try {
+      localStorage.setItem('steelstorm.lang', this.lang);
+    } catch {}
+    audio.play('ui', undefined, undefined, { freq: 720 });
   }
 
   toggleTouchUi() {
@@ -570,7 +590,7 @@ export class Game {
           if (pts(m.x, m.y, 14)) {
             m.alive = false;
             this.explode(m.x, m.y, 30, 0, this.player, { size: 0.6, team: 'player', noScorch: true });
-            this.floatText(m.x, m.y, 'INTERCEPT', '#7ad7ff');
+            this.floatText(m.x, m.y, tr(this.lang).intercept, '#7ad7ff');
             this.addScore(50, m.x, m.y, true);
             return { damage: () => 0, alive: true };
           }
@@ -759,7 +779,7 @@ export class Game {
         if (attacker !== p && vo === p) dmg *= 0.5 / Math.sqrt(p.mods.ram);
         if (dmg > 1) {
           vo.damage(dmg, attacker, c.cx, c.cy);
-          if (attacker === p && dmg > 8) this.floatText(c.cx, c.cy, 'RAM!', '#ffb347');
+          if (attacker === p && dmg > 8) this.floatText(c.cx, c.cy, tr(this.lang).ram, '#ffb347');
         }
       } else if (body && body.owner && body.owner.hp !== undefined && body.owner.type) {
         if (dmg > 2 || body.owner.explosive) this.damageProp(body.owner, dmg * 1.5 + (vn > 220 ? 10 : 0), attacker);
@@ -806,7 +826,7 @@ export class Game {
     if (tank.kind === 'boss') {
       this.targetTimeScale = 0.25;
       this.delayed.push({ t: 0.6, fn: () => (this.targetTimeScale = 1) });
-      this.say('BOSS DESTROYED', `+${tank.spec.score * this.mult()}`, '#ffd34d');
+      this.say(tr(this.lang).bossDestroyed, `+${tank.spec.score * this.mult()}`, '#ffd34d');
       for (let i = 0; i < 6; i++) this.delayed.push({ t: 0.2 + i * 0.18, fn: () => this.fx.explosion(b.x + rand(-60, 60), b.y + rand(-50, 50), rand(1.2, 2), { debris: 'metal' }) });
       for (let i = 0; i < 3; i++) this.spawnPickup(b.x, b.y, i === 0 ? 'repair' : null);
     } else this.hitStop = 0.035;
@@ -825,7 +845,7 @@ export class Game {
       this.stats.bases++;
       const bonus = 2000 * this.mult();
       this.score += bonus;
-      this.say('BASE DESTROYED', `+${bonus}`, '#ffd34d');
+      this.say(tr(this.lang).baseDestroyed, `+${bonus}`, '#ffd34d');
       audio.play('stinger', undefined, undefined, { chord: [48, 55, 60, 64] });
       this.spawnPickup(base.x, base.y, 'repair');
       this.spawnPickup(base.x, base.y);
@@ -865,7 +885,7 @@ export class Game {
         this.missiles += this.missilePerKill;
       }
     }
-    const names = { 2: 'DOUBLE KILL', 3: 'TRIPLE KILL', 4: 'MULTI KILL', 5: 'RAMPAGE', 7: 'UNSTOPPABLE', 10: 'GODLIKE', 15: 'STEEL STORM' };
+    const names = tr(this.lang).streaks;
     if (names[this.streak]) {
       this.say(names[this.streak], null, '#ff7a3a', 1.2, true);
       audio.play('powerup', undefined, undefined, { volume: 0.6 });
@@ -985,7 +1005,7 @@ export class Game {
     const info = PICKUPS[k.kind];
     this.fx.pickupBurst(k.x, k.y, info.color);
     audio.play(k.kind === 'nuke' ? 'powerup' : 'pickup');
-    this.floatText(p.x, p.y - 40, info.label, info.color, 1.3);
+    this.floatText(p.x, p.y - 40, tr(this.lang).pickups[k.kind] || info.label, info.color, 1.3);
     switch (k.kind) {
       case 'repair':
         p.hp = Math.min(p.maxHp, p.hp + 40);
@@ -1011,7 +1031,7 @@ export class Game {
     this.addShake(1);
     this.hitStop = 0.1;
     audio.play('explosion', x, y, { size: 4 });
-    this.say('NUKE!', null, '#fff1a0', 1.5);
+    this.say(tr(this.lang).nukeBanner, null, '#fff1a0', 1.5);
     const R = 1100;
     for (const ai of [...this.enemyTanks]) if (Math.hypot(ai.tank.x - x, ai.tank.y - y) < R) ai.tank.damage(9999, this.player, ai.tank.x, ai.tank.y);
     for (const a of [...this.air]) if (a.alive && Math.hypot(a.x - x, a.y - y) < R) a.damage(9999, this.player);
@@ -1042,7 +1062,8 @@ export class Game {
         this.waveTimer = 1.8;
         const bonus = 500 * this.wave;
         this.score += bonus;
-        this.say(`WAVE ${this.wave} CLEARED`, `+${bonus} bonus`, '#7dff8a');
+        const t = tr(this.lang);
+        this.say(t.waveCleared(this.wave), t.waveBonus(bonus), '#7dff8a');
         audio.play('stinger', undefined, undefined, { chord: [48, 52, 55, 60] });
       }
       return;
@@ -1089,11 +1110,12 @@ export class Game {
         budget -= pickd[0] === 'drone' ? 2 : pickd[1];
       }
     }
+    const t = tr(this.lang);
     if (boss) {
       q.unshift('boss');
       audio.play('alarm');
-      this.say(`WAVE ${n}`, 'WARNING: BEHEMOTH APPROACHING', '#ff4a3a', 2.4);
-    } else this.say(`WAVE ${n}`, n === 1 ? 'Hostile scouts inbound' : `${q.length} hostiles inbound`, '#ffd34d', 2);
+      this.say(t.wave(n), t.bossWarn, '#ff4a3a', 2.4);
+    } else this.say(t.wave(n), n === 1 ? t.scoutsInbound : t.hostilesInbound(q.length), '#ffd34d', 2);
     this.spawnQueue = q;
     this.spawnTimer = 0.5;
     audio.play('stinger', undefined, undefined, { chord: boss ? [45, 48, 51, 54] : [45, 52, 57, 64] });
@@ -1162,7 +1184,8 @@ export class Game {
     this.timeScale = 1;
     this.waveState = 'intermission';
     this.waveTimer = 1.5;
-    this.floatText(this.player.x, this.player.y - 50, u.name.toUpperCase(), '#9fe8ff', 1.4);
+    const [uname] = tr(this.lang).upgrades[u.id] || [u.name];
+    this.floatText(this.player.x, this.player.y - 50, uname.toUpperCase(), '#9fe8ff', 1.4);
     audio.play('pickup');
     this.last = performance.now();
   }
@@ -1341,7 +1364,7 @@ export class Game {
       const a = Math.min(1, t.life / 0.3);
       const pop = 1 + Math.max(0, (t.life - t.max + 0.15) / 0.15) * 0.6;
       ctx.globalAlpha = a;
-      ctx.font = `900 ${Math.round(18 * t.scale * pop / this.cam.zoom)}px "Russo One", Impact, sans-serif`;
+      ctx.font = fontSpec(this.lang, Math.round((18 * t.scale * pop) / this.cam.zoom), 'title');
       ctx.lineWidth = 4 / this.cam.zoom;
       ctx.strokeStyle = 'rgba(0,0,0,0.75)';
       ctx.strokeText(t.text, t.x, t.y);

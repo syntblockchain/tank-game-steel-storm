@@ -1,9 +1,14 @@
 // Entry point: build the game once fonts are ready and start the frame loop.
 
 import { Game } from './game.js';
+import { detectLang, tr } from './i18n.js';
 
 async function boot() {
   const canvas = document.getElementById('screen');
+  const loading = document.getElementById('loading');
+  const lang = detectLang();
+  if (document.documentElement) document.documentElement.lang = lang;
+  if (loading) loading.textContent = tr(lang).loading;
   try {
     // Canvas text only uses a web font once it has loaded, so request both up front.
     const fonts = Promise.all(['20px "Russo One"', '20px "Share Tech Mono"'].map((f) => document.fonts.load(f)));

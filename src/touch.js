@@ -1,6 +1,7 @@
 // Dual virtual joysticks and tactical touch controls for mobile play.
 
 import { clamp, TAU } from './util.js';
+import { fontSpec, tr } from './i18n.js';
 
 const FONT = '"Russo One", "Arial Black", Impact, sans-serif';
 const MONO = '"Share Tech Mono", ui-monospace, Menlo, monospace';
@@ -332,7 +333,7 @@ export class TouchControls {
 
 // --- Rendering --------------------------------------------------------------------------
 
-function drawJoystick(ctx, st, home, jr, knobR, isRight, time) {
+function drawJoystick(ctx, st, home, jr, knobR, isRight, time, lang = 'en') {
   const cx = st.active ? st.originX : home.x;
   const cy = st.active ? st.originY : home.y;
   const firing = isRight && st.firing;
@@ -416,11 +417,12 @@ function drawJoystick(ctx, st, home, jr, knobR, isRight, time) {
 
   // Idle label inside base
   if (!st.active) {
-    ctx.font = `700 ${Math.round(clamp(jr * 0.19, 9, 12))}px ${MONO}`;
+    const t = tr(lang);
+    ctx.font = fontSpec(lang, Math.round(clamp(jr * 0.18, 9, 12)), 'mono');
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = 'rgba(232,211,106,0.5)';
-    ctx.fillText(isRight ? 'AIM · FIRE' : 'MOVE', cx, cy + jr * 0.68);
+    ctx.fillText(isRight ? t.stickRight : t.stickLeft, cx, cy + jr * 0.68);
   }
 
   // Thumb knob
@@ -601,8 +603,8 @@ export function drawTouchControls(game, ctx) {
   const tc = game.input.touch;
 
   // Dual joysticks
-  drawJoystick(ctx, tc.left, layout.leftHome, layout.jr, layout.knobR, false, game.time);
-  drawJoystick(ctx, tc.right, layout.rightHome, layout.jr, layout.knobR, true, game.time);
+  drawJoystick(ctx, tc.left, layout.leftHome, layout.jr, layout.knobR, false, game.time, game.lang);
+  drawJoystick(ctx, tc.right, layout.rightHome, layout.jr, layout.knobR, true, game.time, game.lang);
 
   // Secondary action buttons
   drawActionButton(ctx, layout.buttons.bst, {
