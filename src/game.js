@@ -499,13 +499,13 @@ export class Game {
         driveToward(p, mx / m, my / m, 1, true);
       }
     } else if (leftHandDrive) {
-      driveToward(p, lg.dx, lg.dy, 1, true);
+      driveToward(p, lg.dx, lg.dy, clamp(0.35 + (lg.mag ?? 1) * 0.65, 0.35, 1), true);
     } else if (leftHandActive) {
-      // Left hand is present in center circle ("do nothing") or open firing: stay stationary.
+      // Left hand is resting at its anchor ("do nothing") or open firing: stay stationary.
       p.throttle = 0;
       p.turn = 0;
     } else if (rightHandSmartDrive) {
-      driveToward(p, rg.dx, rg.dy, 1, true);
+      driveToward(p, rg.dx, rg.dy, clamp(0.35 + (rg.mag ?? 1) * 0.65, 0.35, 1), true);
     } else {
       p.throttle = 0;
       p.turn = 0;

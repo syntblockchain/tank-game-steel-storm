@@ -1,9 +1,12 @@
-// AirGesture-style 1-hand (right) and 2-hand (left move+alt-fire / right aim+cannon)
-// webcam control (4 triangles + center circle per hand zone) on both laptop and mobile.
+// Dynamic resting-anchor 360-degree camera joystick control (1-hand & 2-hand)
+// replacing / driving the virtual joysticks on both laptop and mobile.
+// When a hand stops moving, its palm center automatically becomes the neutral
+// stop anchor; nudging the hand at any 360-degree angle aims/steers at that
+// exact angle. Open hand -> Fire; Closed hand -> Do nothing (aim/steer only on nudge).
 // Uses MediaPipe Hands when reachable, with an offline pure-JS CV tracker fallback
-// and an interactive multi-touch / mouse pad fallback when no camera is available.
+// and an interactive multi-touch / mouse drag joystick pad when no camera is available.
 
-import { clamp, TAU } from './util.js';
+import { clamp, lerp, TAU } from './util.js';
 import { fontSpec, tr } from './i18n.js';
 
 const MP_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/';
@@ -15,45 +18,56 @@ const MP_HAND_CONNECTIONS = [
   [13, 17], [0, 17], [17, 18], [18, 19], [19, 20],
 ];
 
+const REST_RADIUS = 0.017;
+const REST_DWELL_MS = 380;
+const LEASH_RADIUS = 0.14;
+
 function dist2(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-// Barycentric AirGesture 5-zone classification:
-// center circle (radius = min(w, h) * 0.20) + 4 triangles (up, down, left, right).
-export function classifyAirGesture(x, y, w, h, handState, circleRatio = 0.20) {
+// Continuous 360-degree joystick classification relative to the hand's resting anchor.
+export function classifyHandJoystick(x, y, anchorX, anchorY, handState, opts = {}) {
   if (!handState || handState === 'none') {
-    return { action: 'none', zone: 'none', dx: 0, dy: 0, angle: null, fire: false };
+    return { action: 'none', dx: 0, dy: 0, angle: null, mag: 0, dist: 0, fire: false };
   }
-  const cx = w / 2;
-  const cy = h / 2;
-  const r = Math.min(w, h) * circleRatio;
-  const d = Math.hypot(x - cx, y - cy);
-  const nx = (x - cx) / Math.max(1e-4, w / 2);
-  const ny = (y - cy) / Math.max(1e-4, h / 2);
+  const aspect = opts.aspect ?? 4 / 3;
+  const deadzone = opts.deadzone ?? 0.022;
+  const deadzoneOpen = opts.deadzoneOpen ?? 0.036;
+  const maxDist = opts.maxDist ?? 0.11;
 
-  let zone = 'circle';
-  if (d > r) {
-    if (Math.abs(ny) >= Math.abs(nx)) zone = ny < 0 ? 'up' : 'down';
-    else zone = nx < 0 ? 'left' : 'right';
+  const vx = (x - anchorX) * aspect;
+  const vy = y - anchorY;
+  const dist = Math.hypot(vx, vy);
+  const fire = handState === 'open';
+  const dz = fire ? deadzoneOpen : deadzone;
+
+  if (dist <= dz || dist < 1e-6) {
+    return {
+      action: fire ? 'fire' : 'idle',
+      dx: 0,
+      dy: 0,
+      angle: null,
+      mag: 0,
+      dist,
+      fire,
+    };
   }
 
-  const dirs = {
-    up: { dx: 0, dy: -1, angle: -Math.PI / 2 },
-    down: { dx: 0, dy: 1, angle: Math.PI / 2 },
-    left: { dx: -1, dy: 0, angle: Math.PI },
-    right: { dx: 1, dy: 0, angle: 0 },
-    circle: { dx: 0, dy: 0, angle: null },
+  const mag = clamp((dist - dz) / Math.max(1e-4, maxDist - dz), 0, 1);
+  const dx = vx / dist;
+  const dy = vy / dist;
+  const angle = Math.atan2(dy, dx);
+
+  return {
+    action: fire ? 'fire' : 'move',
+    dx,
+    dy,
+    angle,
+    mag,
+    dist,
+    fire,
   };
-  const dir = dirs[zone];
-
-  if (handState === 'open') {
-    return { action: 'fire', zone, dx: dir.dx, dy: dir.dy, angle: dir.angle, fire: true };
-  }
-  if (zone === 'circle') {
-    return { action: 'idle', zone: 'circle', dx: 0, dy: 0, angle: null, fire: false };
-  }
-  return { action: zone, zone, dx: dir.dx, dy: dir.dy, angle: dir.angle, fire: false };
 }
 
 export function classifyLandmarksOpenClosed(lm, prevOpen = false) {
@@ -74,7 +88,6 @@ export function classifyLandmarksOpenClosed(lm, prevOpen = false) {
     spreadSum += dTipWrist / palm;
     if (dTipWrist > dPipWrist * 1.10 && dTipMcp > palm * 0.55) ext++;
   }
-  // Thumb extension relative to pinky MCP (17) and index MCP (5)
   if (dist2(lm[4], lm[17]) > dist2(lm[2], lm[17]) * 1.15 && dist2(lm[4], lm[5]) > palm * 0.42) ext++;
   const avgSpread = spreadSum / 4;
 
@@ -303,10 +316,8 @@ export class FallbackCvTracker {
 
     blobs.sort((a, b) => b.area - a.area);
     const primary = blobs[0];
-    // Find a clearly separated second hand blob (area >= 35% of primary and X gap >= 0.16)
     const secondary = blobs.slice(1).find((b) => b.area >= primary.area * 0.35 && Math.hypot(b.cxN - primary.cxN, b.cyN - primary.cyN) >= 0.16);
     if (!secondary) {
-      // Only 1 hand visible -> treat as right hand
       this._miss(this._left);
       return { left: null, right: this._buildRes(primary, this._right, mask) };
     }
@@ -319,17 +330,21 @@ export class FallbackCvTracker {
   }
 }
 
-function makeHandSlot() {
+function makeHandSlot(defaultX = 0.5) {
   return {
     detected: false,
-    handX: 0.5,
+    handX: defaultX,
     handY: 0.5,
-    localX: 0.5,
-    localY: 0.5,
+    anchorX: defaultX,
+    anchorY: 0.5,
+    restOriginX: defaultX,
+    restOriginY: 0.5,
+    restStartAt: 0,
+    resting: true,
     handState: 'none',
     landmarks: null,
     bbox: null,
-    gesture: classifyAirGesture(0.5, 0.5, 1, 1, 'none'),
+    gesture: classifyHandJoystick(defaultX, 0.5, defaultX, 0.5, 'none'),
     lastDetectAt: 0,
     padPointerId: null,
     padOpen: false,
@@ -337,22 +352,30 @@ function makeHandSlot() {
   };
 }
 
-function resetHandSlot(slot) {
+function resetHandSlot(slot, defaultX = 0.5) {
   slot.detected = false;
+  slot.handX = defaultX;
+  slot.handY = 0.5;
+  slot.anchorX = defaultX;
+  slot.anchorY = 0.5;
+  slot.restOriginX = defaultX;
+  slot.restOriginY = 0.5;
+  slot.restStartAt = 0;
+  slot.resting = true;
   slot.handState = 'none';
   slot.landmarks = null;
   slot.bbox = null;
   slot.padPointerId = null;
   slot.padOpen = false;
   slot._mpState = 'none';
-  slot.gesture = classifyAirGesture(0.5, 0.5, 1, 1, 'none');
+  slot.gesture = classifyHandJoystick(defaultX, 0.5, defaultX, 0.5, 'none');
 }
 
 export class FreeHandController {
   constructor() {
     this.enabled = false;
     this.twoHand = false;
-    this.mode = 'smart'; // 'smart' | 'aim' (for 1-hand, or single-hand fallback in 2-hand)
+    this.mode = 'smart'; // 'smart' | 'aim' (when operating single right hand)
     this.leftWeapon = 'auto'; // 'auto' (MSL+MG) | 'msl' | 'mg'
     this.status = 'off'; // 'off' | 'loading' | 'ready' | 'fallback' | 'nocam'
     this.backend = 'none'; // 'none' | 'mediapipe' | 'cv' | 'pad'
@@ -363,22 +386,16 @@ export class FreeHandController {
     this._lastSend = 0;
     this._cv = new FallbackCvTracker();
 
-    this.left = makeHandSlot();
-    this.right = makeHandSlot();
+    this.left = makeHandSlot(0.25);
+    this.right = makeHandSlot(0.5);
     this._syncLegacy();
   }
 
-  _boxAspect() {
-    return this.twoHand ? 1.12 : 1.33;
-  }
-
-  _recomputeGesture(slot) {
-    if (!slot.detected || slot.handState === 'none') {
-      slot.gesture = classifyAirGesture(0.5, 0.5, 1, 1, 'none');
-      return;
+  _camAspect() {
+    if (this.video && this.video.videoWidth > 0 && this.video.videoHeight > 0) {
+      return clamp(this.video.videoWidth / this.video.videoHeight, 0.5, 2.5);
     }
-    const asp = this._boxAspect();
-    slot.gesture = classifyAirGesture(slot.localX * asp, slot.localY, asp, 1, slot.handState);
+    return 4 / 3;
   }
 
   _syncLegacy() {
@@ -386,6 +403,8 @@ export class FreeHandController {
     this.detected = r.detected;
     this.handX = r.handX;
     this.handY = r.handY;
+    this.anchorX = r.anchorX;
+    this.anchorY = r.anchorY;
     this.handState = r.handState;
     this.landmarks = r.landmarks;
     this.bbox = r.bbox;
@@ -402,16 +421,17 @@ export class FreeHandController {
   toggleTwoHand() {
     this.twoHand = !this.twoHand;
     if (!this.twoHand) {
-      resetHandSlot(this.left);
-      if (this.right.detected) {
-        this.right.localX = this.right.handX;
-        this.right.localY = this.right.handY;
-        this._recomputeGesture(this.right);
-      }
-    } else if (this.right.detected) {
-      this.right.localX = clamp((this.right.handX - 0.5) * 2, 0, 1);
-      this.right.localY = this.right.handY;
-      this._recomputeGesture(this.right);
+      resetHandSlot(this.left, 0.25);
+    }
+    if (this.right.detected) {
+      this.right.gesture = classifyHandJoystick(
+        this.right.handX,
+        this.right.handY,
+        this.right.anchorX,
+        this.right.anchorY,
+        this.right.handState,
+        { aspect: this._camAspect() }
+      );
     }
     this._syncLegacy();
   }
@@ -428,8 +448,8 @@ export class FreeHandController {
   async enable() {
     if (this.enabled) return;
     this.enabled = true;
-    resetHandSlot(this.left);
-    resetHandSlot(this.right);
+    resetHandSlot(this.left, 0.25);
+    resetHandSlot(this.right, this.twoHand ? 0.75 : 0.5);
     this._syncLegacy();
 
     if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -471,8 +491,8 @@ export class FreeHandController {
     this.enabled = false;
     this.status = 'off';
     this.backend = 'none';
-    resetHandSlot(this.left);
-    resetHandSlot(this.right);
+    resetHandSlot(this.left, 0.25);
+    resetHandSlot(this.right, 0.5);
     this._syncLegacy();
     if (this.stream) {
       this.stream.getTracks().forEach((t) => t.stop());
@@ -542,41 +562,121 @@ export class FreeHandController {
     return tryLoad('./assets/mediapipe/hands/').catch(() => tryLoad(MP_CDN));
   }
 
-  _applyLmToSlot(slot, lm, isLeft, now) {
-    if (!lm) {
-      if (now - slot.lastDetectAt > 180) {
-        slot.detected = false;
-        slot.handState = 'none';
-        slot.landmarks = null;
-        slot.gesture = classifyAirGesture(0.5, 0.5, 1, 1, 'none');
+  _updateSlotFromTracking(slot, rawX, rawY, state, now, landmarks, bbox) {
+    const aspect = this._camAspect();
+    if (!slot.detected) {
+      slot.detected = true;
+      slot.handX = rawX;
+      slot.handY = rawY;
+      slot.anchorX = rawX;
+      slot.anchorY = rawY;
+      slot.restOriginX = rawX;
+      slot.restOriginY = rawY;
+      slot.restStartAt = now;
+      slot.resting = true;
+    } else {
+      const sx = lerp(slot.handX, rawX, 0.58);
+      const sy = lerp(slot.handY, rawY, 0.58);
+      const drift = Math.hypot((sx - slot.restOriginX) * aspect, sy - slot.restOriginY);
+      if (drift > REST_RADIUS) {
+        slot.restOriginX = sx;
+        slot.restOriginY = sy;
+        slot.restStartAt = now;
+        slot.resting = false;
+      } else if (now - slot.restStartAt >= REST_DWELL_MS) {
+        slot.resting = true;
+        slot.anchorX = sx;
+        slot.anchorY = sy;
       }
-      return;
+
+      const lvx = (sx - slot.anchorX) * aspect;
+      const lvy = sy - slot.anchorY;
+      const ld = Math.hypot(lvx, lvy);
+      if (ld > LEASH_RADIUS) {
+        const k = (ld - LEASH_RADIUS) / ld;
+        slot.anchorX = clamp(slot.anchorX + (lvx * k) / aspect, 0, 1);
+        slot.anchorY = clamp(slot.anchorY + lvy * k, 0, 1);
+      }
+
+      slot.handX = sx;
+      slot.handY = sy;
     }
-    const c = palmCenter(lm);
-    const prevOpen = slot._mpState === 'open';
-    const state = classifyLandmarksOpenClosed(lm, prevOpen);
-    slot._mpState = state;
-    slot.landmarks = lm;
-    slot.bbox = null;
-    slot.detected = true;
-    slot.handX = c.x;
-    slot.handY = c.y;
-    slot.localX = this.twoHand
-      ? (isLeft ? clamp(c.x * 2, 0, 1) : clamp((c.x - 0.5) * 2, 0, 1))
-      : c.x;
-    slot.localY = c.y;
+
     slot.handState = state;
+    slot.landmarks = landmarks;
+    slot.bbox = bbox;
     slot.lastDetectAt = now;
-    this._recomputeGesture(slot);
+    slot.gesture = classifyHandJoystick(slot.handX, slot.handY, slot.anchorX, slot.anchorY, state, { aspect });
+  }
+
+  _clearSlotIfExpired(slot, now, defaultX) {
+    if (slot.detected && now - slot.lastDetectAt > 180) {
+      resetHandSlot(slot, defaultX);
+    }
+  }
+
+  _reanchorRightOnSwap(rawX, rawY, prevTwoActive, nowTwoActive) {
+    if (!this.twoHand || prevTwoActive === nowTwoActive || !this.right.detected) return;
+    const jump = Math.hypot((rawX - this.right.handX) * this._camAspect(), rawY - this.right.handY);
+    if (jump > 0.22) {
+      resetHandSlot(this.right, 0.75);
+    }
   }
 
   _onMpResults(results) {
     if (!this.enabled || this.backend !== 'mediapipe') return;
     const now = performance.now();
+    const prevTwoActive = this.left.detected;
     const { left, right } = pickHands(results, this.twoHand);
-    this._applyLmToSlot(this.right, right, false, now);
-    if (this.twoHand) this._applyLmToSlot(this.left, left, true, now);
-    else resetHandSlot(this.left);
+    const nowTwoActive = !!(this.twoHand && left && right);
+
+    if (right) {
+      const c = palmCenter(right);
+      this._reanchorRightOnSwap(c.x, c.y, prevTwoActive, nowTwoActive);
+      const state = classifyLandmarksOpenClosed(right, this.right._mpState === 'open');
+      this.right._mpState = state;
+      this._updateSlotFromTracking(this.right, c.x, c.y, state, now, right, null);
+    } else {
+      this._clearSlotIfExpired(this.right, now, this.twoHand ? 0.75 : 0.5);
+    }
+
+    if (this.twoHand) {
+      if (left) {
+        const c = palmCenter(left);
+        const state = classifyLandmarksOpenClosed(left, this.left._mpState === 'open');
+        this.left._mpState = state;
+        this._updateSlotFromTracking(this.left, c.x, c.y, state, now, left, null);
+      } else {
+        this._clearSlotIfExpired(this.left, now, 0.25);
+      }
+    } else {
+      resetHandSlot(this.left, 0.25);
+    }
+    this._syncLegacy();
+  }
+
+  beginPadInput(nx, ny, open, side = 'auto') {
+    const cx = clamp(nx, 0, 1);
+    const cy = clamp(ny, 0, 1);
+    let targetSide = side;
+    if (!this.twoHand) targetSide = 'right';
+    else if (targetSide === 'auto') targetSide = cx < 0.5 ? 'left' : 'right';
+
+    const slot = targetSide === 'left' ? this.left : this.right;
+    slot.detected = true;
+    slot.anchorX = cx;
+    slot.anchorY = cy;
+    slot.handX = cx;
+    slot.handY = cy;
+    slot.restOriginX = cx;
+    slot.restOriginY = cy;
+    slot.restStartAt = performance.now();
+    slot.resting = true;
+    slot.handState = open ? 'open' : 'closed';
+    slot.landmarks = null;
+    slot.bbox = null;
+    slot.lastDetectAt = performance.now();
+    slot.gesture = classifyHandJoystick(cx, cy, cx, cy, slot.handState, { aspect: this._camAspect() });
     this._syncLegacy();
   }
 
@@ -588,66 +688,42 @@ export class FreeHandController {
     else if (targetSide === 'auto') targetSide = cx < 0.5 ? 'left' : 'right';
 
     const slot = targetSide === 'left' ? this.left : this.right;
+    if (!slot.detected) {
+      const defX = !this.twoHand ? 0.5 : (targetSide === 'left' ? 0.25 : 0.75);
+      slot.anchorX = defX;
+      slot.anchorY = 0.5;
+    }
+
+    const aspect = this._camAspect();
+    if (this.twoHand) {
+      slot.handX = targetSide === 'left' ? clamp(cx, 0, 0.52) : clamp(cx, 0.48, 1);
+    } else {
+      slot.handX = cx;
+    }
+    slot.handY = cy;
     slot.detected = true;
+    slot.resting = Math.hypot((slot.handX - slot.anchorX) * aspect, slot.handY - slot.anchorY) <= 0.022;
     slot.handState = open ? 'open' : 'closed';
     slot.landmarks = null;
     slot.bbox = null;
     slot.lastDetectAt = performance.now();
-
-    if (!this.twoHand) {
-      slot.handX = cx;
-      slot.handY = cy;
-      slot.localX = cx;
-      slot.localY = cy;
-    } else if (targetSide === 'left') {
-      slot.handX = clamp(cx, 0, 0.5);
-      slot.handY = cy;
-      slot.localX = clamp(slot.handX * 2, 0, 1);
-      slot.localY = cy;
-    } else {
-      slot.handX = clamp(cx, 0.5, 1);
-      slot.handY = cy;
-      slot.localX = clamp((slot.handX - 0.5) * 2, 0, 1);
-      slot.localY = cy;
-    }
-    this._recomputeGesture(slot);
+    slot.gesture = classifyHandJoystick(slot.handX, slot.handY, slot.anchorX, slot.anchorY, slot.handState, {
+      aspect,
+      deadzone: 0.02,
+      deadzoneOpen: 0.025,
+      maxDist: 0.14,
+    });
     this._syncLegacy();
   }
 
   clearPadInput(side = 'all') {
-    const clearSlot = (slot) => {
+    const clearSlot = (slot, defX) => {
       slot.padPointerId = null;
-      if (this.backend === 'pad') {
-        slot.detected = false;
-        slot.handState = 'none';
-        slot.gesture = classifyAirGesture(0.5, 0.5, 1, 1, 'none');
-      }
+      if (this.backend === 'pad') resetHandSlot(slot, defX);
     };
-    if (side === 'left' || side === 'all') clearSlot(this.left);
-    if (side === 'right' || side === 'all') clearSlot(this.right);
+    if (side === 'left' || side === 'all') clearSlot(this.left, 0.25);
+    if (side === 'right' || side === 'all') clearSlot(this.right, this.twoHand ? 0.75 : 0.5);
     this._syncLegacy();
-  }
-
-  _applyCvToSlot(slot, res, isLeft, now) {
-    if (res) {
-      slot.detected = true;
-      slot.handX = res.x;
-      slot.handY = res.y;
-      slot.localX = this.twoHand
-        ? (isLeft ? clamp(res.x * 2, 0, 1) : clamp((res.x - 0.5) * 2, 0, 1))
-        : res.x;
-      slot.localY = res.y;
-      slot.handState = res.state;
-      slot.bbox = res.bbox;
-      slot.landmarks = null;
-      slot.lastDetectAt = now;
-      this._recomputeGesture(slot);
-    } else if (now - slot.lastDetectAt > 200) {
-      slot.detected = false;
-      slot.handState = 'none';
-      slot.bbox = null;
-      slot.gesture = classifyAirGesture(0.5, 0.5, 1, 1, 'none');
-    }
   }
 
   update(nowMs) {
@@ -667,11 +743,22 @@ export class FreeHandController {
         this._lastSend = nowMs;
         const res = this._cv.process(this.video, this.twoHand);
         if (!this.twoHand) {
-          this._applyCvToSlot(this.right, res, false, nowMs);
-          resetHandSlot(this.left);
+          if (res) this._updateSlotFromTracking(this.right, res.x, res.y, res.state, nowMs, null, res.bbox);
+          else this._clearSlotIfExpired(this.right, nowMs, 0.5);
+          resetHandSlot(this.left, 0.25);
         } else {
-          this._applyCvToSlot(this.right, res ? res.right : null, false, nowMs);
-          this._applyCvToSlot(this.left, res ? res.left : null, true, nowMs);
+          const prevTwoActive = this.left.detected;
+          const r = res && res.right;
+          const l = res && res.left;
+          const nowTwoActive = !!(l && r);
+          if (r) {
+            this._reanchorRightOnSwap(r.x, r.y, prevTwoActive, nowTwoActive);
+            this._updateSlotFromTracking(this.right, r.x, r.y, r.state, nowMs, null, r.bbox);
+          } else {
+            this._clearSlotIfExpired(this.right, nowMs, 0.75);
+          }
+          if (l) this._updateSlotFromTracking(this.left, l.x, l.y, l.state, nowMs, null, l.bbox);
+          else this._clearSlotIfExpired(this.left, nowMs, 0.25);
         }
         this._syncLegacy();
       }
@@ -686,8 +773,8 @@ export function getFreeHandRect(layout, twoHand = false) {
     const footerH = 24;
     const maxBottom = Math.min(buttons.msl.y - buttons.msl.r - 10, h - 196);
     if (twoHand) {
-      const pw = clamp(Math.round(w * 0.24), 220, 292);
-      const ph = clamp(Math.min(Math.round(pw * 0.44), maxBottom - topY - footerH), 86, 132);
+      const pw = clamp(Math.round(w * 0.23), 216, 278);
+      const ph = clamp(Math.min(Math.round(pw * 0.56), maxBottom - topY - footerH), 92, 152);
       return { x: w - padR - pw, y: topY, w: pw, h: ph, footerH };
     }
     const ph = clamp(maxBottom - topY - footerH, 90, 174);
@@ -697,8 +784,8 @@ export function getFreeHandRect(layout, twoHand = false) {
   if (!narrow || h < 500) {
     const footerH = 22;
     if (twoHand) {
-      const pw = clamp(Math.round(w * 0.34), 178, 264);
-      const ph = clamp(Math.round(pw * 0.40), 68, 108);
+      const pw = clamp(Math.round(w * 0.34), 178, 256);
+      const ph = clamp(Math.round(pw * 0.44), 72, 112);
       return {
         x: Math.round(w / 2 - pw / 2),
         y: h - padB - ph - footerH,
@@ -718,8 +805,8 @@ export function getFreeHandRect(layout, twoHand = false) {
     };
   }
   // Mobile portrait
-  const pw = twoHand ? clamp(w - padR * 2, 200, 236) : 148;
-  const ph = twoHand ? 96 : 110;
+  const pw = twoHand ? clamp(w - padR * 2, 200, 232) : 148;
+  const ph = twoHand ? 104 : 110;
   return {
     x: w - padR - pw,
     y: minimap.y + minimap.size + 62,
@@ -751,70 +838,17 @@ export function hitFreeHandPanel(x, y, layout, fh = null) {
   return null;
 }
 
-function drawZoneGrid(ctx, bx, by, bw, bh, slot, lang, isLeft) {
-  const cx = bx + bw / 2;
-  const cy = by + bh / 2;
-  const rad = Math.min(bw, bh) * 0.20;
-  const g = slot.gesture;
-
-  const tris = [
-    ['up', [[bx, by], [bx + bw, by], [cx, cy]], 'rgba(79,195,247,0.16)', 'rgba(79,195,247,0.44)'],
-    ['down', [[bx, by + bh], [bx + bw, by + bh], [cx, cy]], 'rgba(79,195,247,0.16)', 'rgba(79,195,247,0.44)'],
-    ['left', [[bx, by], [bx, by + bh], [cx, cy]], 'rgba(232,211,106,0.14)', 'rgba(232,211,106,0.42)'],
-    ['right', [[bx + bw, by], [bx + bw, by + bh], [cx, cy]], 'rgba(232,211,106,0.14)', 'rgba(232,211,106,0.42)'],
-  ];
-
-  const fireFill = isLeft ? 'rgba(190,110,255,0.42)' : 'rgba(255,106,58,0.42)';
-  for (const [zone, pts, idleFill, activeFill] of tris) {
-    const active = slot.detected && g.zone === zone;
-    ctx.fillStyle = active ? (g.fire ? fireFill : activeFill) : idleFill;
-    ctx.beginPath();
-    ctx.moveTo(pts[0][0], pts[0][1]);
-    ctx.lineTo(pts[1][0], pts[1][1]);
-    ctx.lineTo(pts[2][0], pts[2][1]);
-    ctx.closePath();
-    ctx.fill();
-  }
-
-  ctx.strokeStyle = isLeft ? 'rgba(130,220,255,0.35)' : 'rgba(232,211,106,0.35)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(bx, by);
-  ctx.lineTo(bx + bw, by + bh);
-  ctx.moveTo(bx + bw, by);
-  ctx.lineTo(bx, by + bh);
-  ctx.stroke();
-
-  const inCircle = slot.detected && g.zone === 'circle';
-  ctx.fillStyle = inCircle
-    ? (g.fire ? (isLeft ? 'rgba(190,110,255,0.52)' : 'rgba(255,106,58,0.52)') : 'rgba(100,150,255,0.42)')
-    : 'rgba(60,100,180,0.22)';
-  ctx.beginPath();
-  ctx.arc(cx, cy, rad, 0, TAU);
-  ctx.fill();
-  ctx.strokeStyle = inCircle && g.fire ? (isLeft ? '#d49bff' : '#ff8a3a') : 'rgba(140,190,255,0.75)';
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-
-  ctx.font = fontSpec(lang, Math.round(clamp(bh * 0.1, 8.5, 12)), 'mono');
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = 'rgba(255,255,255,0.55)';
-  ctx.fillText('▲', cx, by + bh * 0.18);
-  ctx.fillText('▼', cx, by + bh * 0.84);
-  ctx.fillText('◀', bx + bw * 0.14, cy);
-  ctx.fillText('▶', bx + bw * 0.86, cy);
-}
-
 function drawHandGraphic(ctx, x, y, w, h, slot, isLeft) {
   if (!slot.detected) return;
   const g = slot.gesture;
   const activeCol = g.fire
     ? (isLeft ? '#d49bff' : '#ff4a3a')
     : (isLeft ? '#64e8ff' : '#7dff8a');
+
+  // Hand skeleton or CV box
   if (slot.landmarks) {
     ctx.strokeStyle = activeCol;
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.4;
     for (const [a, b] of MP_HAND_CONNECTIONS) {
       const la = slot.landmarks[a], lb = slot.landmarks[b];
       ctx.beginPath();
@@ -824,7 +858,7 @@ function drawHandGraphic(ctx, x, y, w, h, slot, isLeft) {
     }
   } else if (slot.bbox) {
     ctx.strokeStyle = activeCol;
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.4;
     ctx.strokeRect(
       x + slot.bbox.x0 * w,
       y + slot.bbox.y0 * h,
@@ -832,15 +866,70 @@ function drawHandGraphic(ctx, x, y, w, h, slot, isLeft) {
       (slot.bbox.y1 - slot.bbox.y0) * h
     );
   }
+
+  // Dynamic floating joystick anchor ring + tether vector
+  const ax = x + slot.anchorX * w;
+  const ay = y + slot.anchorY * h;
   const hx = x + slot.handX * w;
   const hy = y + slot.handY * h;
+  const outerR = Math.max(14, Math.round(h * 0.14));
+  const deadR = Math.max(5, Math.round(outerR * 0.34));
+
+  // Outer range circle around resting anchor
+  ctx.save();
+  ctx.fillStyle = g.fire
+    ? (isLeft ? 'rgba(190,110,255,0.22)' : 'rgba(255,106,58,0.22)')
+    : slot.resting
+      ? 'rgba(100,150,255,0.16)'
+      : (isLeft ? 'rgba(100,232,255,0.16)' : 'rgba(125,255,138,0.16)');
+  ctx.beginPath();
+  ctx.arc(ax, ay, outerR, 0, TAU);
+  ctx.fill();
+  ctx.strokeStyle = g.fire ? activeCol : slot.resting ? 'rgba(140,190,255,0.65)' : activeCol;
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+
+  // Inner deadzone circle (resting stop zone)
+  ctx.setLineDash([3, 3]);
+  ctx.strokeStyle = 'rgba(255,255,255,0.38)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(ax, ay, deadR, 0, TAU);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Anchor center crosshair
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.beginPath();
+  ctx.moveTo(ax - 3, ay);
+  ctx.lineTo(ax + 3, ay);
+  ctx.moveTo(ax, ay - 3);
+  ctx.lineTo(ax, ay + 3);
+  ctx.stroke();
+
+  // Vector line from resting anchor -> current palm center
+  if (g.angle !== null) {
+    ctx.strokeStyle = activeCol;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(hx, hy);
+    ctx.stroke();
+  }
+
+  // Current palm center knob
   ctx.fillStyle = activeCol;
   ctx.beginPath();
   ctx.arc(hx, hy, 4.5, 0, TAU);
   ctx.fill();
-  ctx.strokeStyle = '#fff';
+  ctx.strokeStyle = '#ffffff';
   ctx.lineWidth = 1.4;
   ctx.stroke();
+  ctx.restore();
+}
+
+function fmtDeg(rad) {
+  return Math.round((rad * 180) / Math.PI);
 }
 
 export function drawFreeHandOverlay(game, ctx, layout) {
@@ -872,8 +961,17 @@ export function drawFreeHandOverlay(game, ctx, layout) {
     ctx.fillRect(x, y, w, h);
   }
 
+  // Subtle ambient crosshair grid (no fixed 5-zone triangles)
+  ctx.strokeStyle = 'rgba(232,211,106,0.14)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x + w / 2, y + 18);
+  ctx.lineTo(x + w / 2, y + h);
+  ctx.moveTo(x, y + h / 2);
+  ctx.lineTo(x + w, y + h / 2);
+  ctx.stroke();
+
   if (!fh.twoHand) {
-    drawZoneGrid(ctx, x, y, w, h, fh.right, game.lang, false);
     drawHandGraphic(ctx, x, y, w, h, fh.right, false);
 
     const g = fh.right.gesture;
@@ -881,7 +979,9 @@ export function drawFreeHandOverlay(game, ctx, layout) {
       ? (fh.status === 'nocam' ? t.freeHandPadHint : fh.status === 'loading' ? t.freeHandLoading : t.freeHandShow)
       : g.fire
         ? t.freeHandFire
-        : t.freeHandZones[g.zone] || t.freeHandIdle;
+        : g.angle !== null
+          ? `${t.freeHandMoveAngle(fmtDeg(g.angle))}`
+          : t.freeHandIdle;
     ctx.fillStyle = g.fire ? 'rgba(190,45,20,0.86)' : 'rgba(10,14,12,0.72)';
     ctx.fillRect(x, y, w, 18);
     ctx.font = fontSpec(game.lang, 10, 'mono');
@@ -891,24 +991,9 @@ export function drawFreeHandOverlay(game, ctx, layout) {
     ctx.fillText(statusText, x + w / 2, y + 9);
   } else {
     const hw = w / 2;
-    drawZoneGrid(ctx, x, y, hw, h, fh.left, game.lang, true);
-    drawZoneGrid(ctx, x + hw, y, hw, h, fh.right, game.lang, false);
-
-    // Center divider between Left and Right AirGesture boxes
-    ctx.save();
-    ctx.setLineDash([4, 3]);
-    ctx.strokeStyle = 'rgba(255,255,255,0.45)';
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(x + hw, y + 18);
-    ctx.lineTo(x + hw, y + h);
-    ctx.stroke();
-    ctx.restore();
-
     drawHandGraphic(ctx, x, y, w, h, fh.left, true);
     drawHandGraphic(ctx, x, y, w, h, fh.right, false);
 
-    // Status headers for Left and Right halves
     const lg = fh.left.gesture;
     const rg = fh.right.gesture;
     const lStatus = !fh.left.detected
@@ -917,12 +1002,16 @@ export function drawFreeHandOverlay(game, ctx, layout) {
         : fh.right.detected ? t.freeHandOneToRight : t.freeHandLeftShow)
       : lg.fire
         ? t.freeHandLeftFire
-        : t.freeHandLeftZones[lg.zone] || t.freeHandIdle;
+        : lg.angle !== null
+          ? `L ${t.freeHandMoveAngle(fmtDeg(lg.angle))}`
+          : t.freeHandLeftIdle;
     const rStatus = !fh.right.detected
       ? (fh.status === 'nocam' ? t.freeHandPadHintR : t.freeHandRightShow)
       : rg.fire
         ? t.freeHandRightFire
-        : t.freeHandRightZones[rg.zone] || t.freeHandIdle;
+        : rg.angle !== null
+          ? `R ${t.freeHandMoveAngle(fmtDeg(rg.angle))}`
+          : t.freeHandRightIdle;
 
     ctx.font = fontSpec(game.lang, w < 210 ? 8.5 : 9.5, 'mono');
     ctx.textAlign = 'center';
@@ -938,7 +1027,6 @@ export function drawFreeHandOverlay(game, ctx, layout) {
     ctx.fillStyle = rg.fire ? '#fff4d0' : fh.right.detected ? '#7dff8a' : '#e8d36a';
     ctx.fillText(rStatus, x + hw + hw / 2, y + 9);
 
-    // Subtle divider between top status halves
     ctx.strokeStyle = 'rgba(255,255,255,0.25)';
     ctx.lineWidth = 1;
     ctx.beginPath();

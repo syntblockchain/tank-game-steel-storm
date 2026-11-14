@@ -116,7 +116,7 @@ export class Input {
         if (fh.backend === 'pad') {
           const r = getFreeHandRect(layout, fh.twoHand);
           fh.right.padPointerId = id;
-          fh.setPadInput((x - r.x) / r.w, (y - r.y) / r.h, openFlag || fh.right.padOpen, 'right');
+          fh.beginPadInput((x - r.x) / r.w, (y - r.y) / r.h, openFlag || fh.right.padOpen, 'right');
         }
         return true;
       }
@@ -124,7 +124,7 @@ export class Input {
         if (fh.backend === 'pad') {
           const r = getFreeHandRect(layout, fh.twoHand);
           fh.left.padPointerId = id;
-          fh.setPadInput((x - r.x) / r.w, (y - r.y) / r.h, openFlag || fh.left.padOpen, 'left');
+          fh.beginPadInput((x - r.x) / r.w, (y - r.y) / r.h, openFlag || fh.left.padOpen, 'left');
         }
         return true;
       }

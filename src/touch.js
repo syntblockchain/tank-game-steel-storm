@@ -730,7 +730,8 @@ export function drawTouchControls(game, ctx) {
   let leftStick = tc.left;
   if (!tc.left.active && fh && fh.enabled && fh.twoHand && fh.left.detected) {
     const lg = fh.left.gesture;
-    const dist = (lg.dx || lg.dy) ? layout.jr * 0.85 : 0;
+    const mag = lg.mag ?? ((lg.dx || lg.dy) ? 1 : 0);
+    const dist = (lg.dx || lg.dy) ? layout.jr * clamp(0.25 + mag * 0.65, 0.25, 0.9) : 0;
     const ang = lg.angle ?? 0;
     leftStick = {
       active: lg.action !== 'idle' && lg.action !== 'none',
@@ -738,9 +739,9 @@ export function drawTouchControls(game, ctx) {
       originY: layout.leftHome.y,
       curX: layout.leftHome.x + lg.dx * dist,
       curY: layout.leftHome.y + lg.dy * dist,
-      x: lg.dx,
-      y: lg.dy,
-      mag: (lg.dx || lg.dy) ? 1 : 0,
+      x: lg.dx * mag,
+      y: lg.dy * mag,
+      mag,
       angle: ang,
       firing: false,
     };
@@ -750,7 +751,8 @@ export function drawTouchControls(game, ctx) {
   let rightStick = tc.right;
   if (!tc.right.active && fh && fh.enabled && fh.right.detected) {
     const rg = fh.right.gesture;
-    const dist = (rg.dx || rg.dy) ? layout.jr * 0.85 : 0;
+    const mag = rg.mag ?? ((rg.dx || rg.dy) ? 1 : 0);
+    const dist = (rg.dx || rg.dy) ? layout.jr * clamp(0.25 + mag * 0.65, 0.25, 0.9) : 0;
     const ang = rg.angle ?? game.touchAim ?? p.turretAngle;
     rightStick = {
       active: rg.action !== 'idle' && rg.action !== 'none',
@@ -758,9 +760,9 @@ export function drawTouchControls(game, ctx) {
       originY: layout.rightHome.y,
       curX: layout.rightHome.x + rg.dx * dist,
       curY: layout.rightHome.y + rg.dy * dist,
-      x: rg.dx,
-      y: rg.dy,
-      mag: (rg.dx || rg.dy) ? 1 : 0,
+      x: rg.dx * mag,
+      y: rg.dy * mag,
+      mag,
       angle: ang,
       firing: rg.fire,
     };
