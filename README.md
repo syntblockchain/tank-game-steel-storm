@@ -27,8 +27,8 @@ npm run build      # dist/steel-storm.html: one self-contained file, double-clic
 
 | Action | Keyboard / mouse | Gamepad | Touch / On-screen HUD |
 | --- | --- | --- | --- |
-| Drive | WASD (arcade: tank turns toward the direction pressed; `C` switches to classic tank steering) | Left stick | Left joystick (or 2-Hand Free Hand Left 4-triangle zones; closed in circle = idle) |
-| Aim | Mouse (or `[H]` Free Hand webcam 4-triangle zones) | Right stick | Right joystick (or drag `MG` / Free Hand Right) |
+| Drive | WASD (arcade: tank turns toward the direction pressed; `C` switches to classic tank steering) | Left stick | Left joystick (or 2-Hand Free Hand Left 360° anchor joystick; rest = stop) |
+| Aim | Mouse (or `[H]` Free Hand 360° resting-anchor camera joystick) | Right stick | Right joystick (or drag `MG` / Free Hand Right 360° angle) |
 | Cannon | Left click (or Open hand in Free Hand) | RT | Right joystick outer ring (or Free Hand Right open hand) |
 | Coax machine gun | Right click / `F` (overheats) | LT / RB | `MG` button (or Left open hand in `[T]` 2-Hand Free Hand) |
 | Boost | Shift | A / LB | `BST` button (shown on laptop & mobile) |
@@ -59,7 +59,7 @@ npm run build      # dist/steel-storm.html: one self-contained file, double-clic
 | `src/audio.js` | Synthesised SFX, engine/rotor loops, sequenced music |
 | `src/game.js` | Loop, combat, waves, scoring, upgrades, camera, render order |
 | `src/hud.js` | HUD, minimap, menus |
-| `src/freehand.js` | AirGesture-style 1-hand & 2-hand 5-zone webcam & pad controller |
+| `src/freehand.js` | Dynamic resting-anchor 360° webcam & pad controller (1-hand & 2-hand) |
 | `src/i18n.js` | English / Vietnamese strings, locale detection and font stacks |
 | `src/touch.js` | Dual virtual joysticks, mobile action buttons and responsive touch HUD layout |
 
